@@ -67,9 +67,6 @@ class PipelineConfig:
             
         # For backward compatibility, maintain the selected_population attribute
         self.selected_population = self.selected_populations[0] if self.selected_populations else None
-        
-        # Population of interest (for specific analyses)
-        self.population_interest = self.population_config.get("interest", self.selected_population)
     
     def get_rank_thresholds(self) -> List[int]:
         """Get the rank thresholds for the analysis.

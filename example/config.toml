@@ -49,9 +49,8 @@ run_count = true
 
 # Population parameters
 [population]
-population = "ESN"
+population = "YRI"
 groups = ["AFR", "AFR", "AFR", "AFR", "AFR"]
-interest = "ESN"
 
 # Threshold parameters
 [thresholds]
