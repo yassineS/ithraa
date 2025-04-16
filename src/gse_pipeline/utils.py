@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import time
 
 def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
     """Set up logging configuration.
@@ -12,7 +13,10 @@ def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
         level: Logging level (default: INFO)
     """
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / 'pipeline.log'
+    
+    # Add timestamp to logfile name
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    log_file = log_dir / f'pipeline_{timestamp}.log'
 
     # Clear any existing handlers
     root_logger = logging.getLogger()

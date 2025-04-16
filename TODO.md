@@ -16,3 +16,6 @@
 -[] what does "interest" parameter in input do?
 -[] use "population" parameter to select a subset of populations from the input ranks file.
 -[] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'
+- [] what does the parameters do:
+	- [] prefix = "all_ihsfreqafr_ranks"
+	- [] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
