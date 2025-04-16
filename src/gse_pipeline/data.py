@@ -2,19 +2,23 @@
 Utility functions for data processing in the gene set enrichment pipeline.
 """
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 import polars as pl
 import numpy as np
 from pathlib import Path
 import logging
 
-def load_gene_list(file_path: Path, selected_population: Optional[str] = None) -> Tuple[pl.DataFrame, List[str]]:
+def load_gene_list(
+    file_path: Path, 
+    selected_population: Optional[Union[str, List[str]]] = None
+) -> Tuple[pl.DataFrame, List[str]]:
     """
     Load gene list with scores for multiple populations.
     
     Args:
         file_path: Path to gene list file
-        selected_population: Optional specific population to filter for (from config)
+        selected_population: Optional specific population(s) to filter for (from config)
+                            Can be a single population name or a list of population names
         
     Returns:
         Tuple of (DataFrame with gene_id and population scores, list of population names)
@@ -29,16 +33,26 @@ def load_gene_list(file_path: Path, selected_population: Optional[str] = None) -
     # Get all available population names from header (all columns except gene_id)
     all_population_names = [col for col in df.columns if col != 'gene_id']
     
-    # If a specific population is requested, filter for just that one
+    # If specific population(s) are requested, filter for just those
     if selected_population is not None:
-        if selected_population in all_population_names:
-            # Only keep the gene_id and the selected population column
-            population_names = [selected_population]
-            df = df.select(['gene_id'] + population_names)
-            logging.info(f"Filtered gene list to only include the {selected_population} population")
+        # Convert single population to list for unified handling
+        if isinstance(selected_population, str):
+            selected_pops = [selected_population]
         else:
-            logging.warning(f"Selected population '{selected_population}' not found in data. "
-                           f"Available populations: {', '.join(all_population_names)}")
+            selected_pops = selected_population
+            
+        # Check which requested populations exist in the data
+        valid_pops = [pop for pop in selected_pops if pop in all_population_names]
+        
+        if valid_pops:
+            # Only keep the gene_id and the selected population columns
+            population_names = valid_pops
+            df = df.select(['gene_id'] + population_names)
+            logging.info(f"Filtered gene list to only include {len(population_names)} population(s): {', '.join(population_names)}")
+        else:
+            invalid_pops = ', '.join(selected_pops)
+            logging.warning(f"None of the requested populations '{invalid_pops}' were found in data. "
+                          f"Available populations: {', '.join(all_population_names)}")
             population_names = all_population_names
     else:
         population_names = all_population_names

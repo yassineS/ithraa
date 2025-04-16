@@ -294,10 +294,10 @@ class GeneSetEnrichmentPipeline:
                 self.logger.error(error_msg)
                 raise FileNotFoundError(error_msg)
         
-        # Load gene list with population scores, using selected population from config
+        # Load gene list with population scores, using selected populations from config
         self.gene_list_df, self.population_names = load_gene_list(
             self.config.input_files['gene_list_file'],
-            selected_population=self.config.selected_population
+            selected_population=self.config.selected_populations
         )
         
         # Load gene set (target genes)
@@ -325,10 +325,13 @@ class GeneSetEnrichmentPipeline:
         self.logger.info(f"Loaded {len(self.gene_coords_df)} gene coordinates")
         self.logger.info(f"Loaded {len(self.factors_df)} genes with factors")
         
-        if self.config.selected_population:
-            self.logger.info(f"Analyzing only the {self.config.selected_population} population")
+        if self.config.selected_populations:
+            if len(self.config.selected_populations) == 1:
+                self.logger.info(f"Analyzing only the {self.config.selected_populations[0]} population")
+            else:
+                self.logger.info(f"Analyzing {len(self.config.selected_populations)} selected populations: {', '.join(self.config.selected_populations)}")
         else:
-            self.logger.info(f"Analyzing {len(self.population_names)} populations: {', '.join(self.population_names)}")
+            self.logger.info(f"Analyzing all {len(self.population_names)} populations: {', '.join(self.population_names)}")
         
         self.logger.debug("Finished loading input data files")
 

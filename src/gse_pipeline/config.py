@@ -49,7 +49,26 @@ class PipelineConfig:
                                         
         # Extract population settings
         self.population_config = self.config.get("population", {})
-        self.selected_population = self.population_config.get("population", None)
+        
+        # Extract selected populations - support both single population and list of populations
+        single_pop = self.population_config.get("population", None)
+        multi_pop = self.population_config.get("populations", None)
+        
+        # Determine which populations to use (give priority to the list if both are specified)
+        if multi_pop is not None:
+            if isinstance(multi_pop, list):
+                self.selected_populations = multi_pop
+            else:
+                self.selected_populations = [multi_pop]  # Convert single value to list
+        elif single_pop is not None:
+            self.selected_populations = [single_pop]
+        else:
+            self.selected_populations = None
+            
+        # For backward compatibility, maintain the selected_population attribute
+        self.selected_population = self.selected_populations[0] if self.selected_populations else None
+        
+        # Population of interest (for specific analyses)
         self.population_interest = self.population_config.get("interest", self.selected_population)
     
     def get_rank_thresholds(self) -> List[int]:
