@@ -246,11 +246,21 @@ def main():
         with open(args.config_file, 'rb') as f:
             config = tomli.load(f)
     except Exception as e:
-        logging.error(f"Error loading configuration file: {str(e)}")
+        print(f"Error loading configuration file: {str(e)}")
         sys.exit(1)
     
     # Update config with command line overrides
     config = update_config(config, args)
+    
+    # Set up logging first, before any pipeline operations
+    output_dir = Path(config.get('output', {}).get('directory', 'results'))
+    log_dir = output_dir / 'logs'
+    from .utils import setup_logging
+    setup_logging(log_dir)
+    
+    # Log the start of pipeline execution
+    logging.info("Starting gene set enrichment analysis pipeline")
+    logging.info(f"Using configuration file: {args.config_file}")
     
     # Save updated config to a temporary file
     temp_config_path = Path(args.config_file).parent / "temp_config.toml"
@@ -261,6 +271,7 @@ def main():
         # Initialize and run pipeline
         pipeline = GeneSetEnrichmentPipeline(str(temp_config_path))
         pipeline.run()
+        logging.info("Pipeline execution completed successfully")
     except Exception as e:
         logging.error(f"Pipeline execution failed: {str(e)}")
         sys.exit(1)

@@ -20,4 +20,5 @@ __pycache__
 *.coverage
 
 results/
+plots/
 example/temp_config.toml
