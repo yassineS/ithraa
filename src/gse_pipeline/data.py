@@ -18,14 +18,42 @@ def load_gene_list(file_path: Path) -> Tuple[pl.DataFrame, List[str]]:
     Returns:
         Tuple of (DataFrame with gene_id and population scores, list of population names)
     """
-    df = pl.read_csv(
-        file_path,
-        separator='\t',
-        has_header=True
-    )
+    # First check if the file has the special format with spaces in header
+    with open(file_path, 'r') as f:
+        header = f.readline().strip()
     
-    # Get population names from header (all columns except gene_id)
-    population_names = [col for col in df.columns if col != 'gene_id']
+    if header.startswith('gene_id '):
+        # This is the special format where columns are space-separated
+        # and the header has spaces between column names
+        column_names = header.split()
+        
+        # Read the file manually to handle the space-separated format
+        data = []
+        with open(file_path, 'r') as f:
+            next(f)  # Skip header
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) == len(column_names):
+                    data.append({column_names[i]: parts[i] for i in range(len(column_names))})
+        
+        # Convert to polars DataFrame
+        df = pl.DataFrame(data)
+        
+        # Convert score columns to numeric
+        population_names = column_names[1:]
+        for col in population_names:
+            df = df.with_columns(pl.col(col).cast(pl.Float64))
+            
+    else:
+        # Standard format with tab-separated columns
+        df = pl.read_csv(
+            file_path,
+            separator='\t',
+            has_header=True
+        )
+        
+        # Get population names from header (all columns except gene_id)
+        population_names = [col for col in df.columns if col != 'gene_id']
     
     return df, population_names
 
