@@ -191,8 +191,8 @@ def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
     
     # Group genes by chromosome for faster processing
     grouped_by_chrom = {}
-    for chrom, group in gene_coords.group_by('chrom').into_groups():
-        grouped_by_chrom[chrom] = group
+    for chrom in gene_coords['chrom'].unique():
+        grouped_by_chrom[chrom] = gene_coords.filter(pl.col('chrom') == chrom)
     
     # Process each chromosome separately
     all_distances = []

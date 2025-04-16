@@ -320,10 +320,10 @@ class GeneSetEnrichmentPipeline:
             # Get chromosome sizes for genome shuffling
             self.logger.info("Preparing chromosome size data for shuffling")
             chrom_sizes = {}
-            for row in self.gene_coords_df.group_by('chrom').agg(
-                pl.max('end').alias('size')
-            ).to_dicts():
-                chrom_sizes[row['chrom']] = row['size']
+            for chrom in self.gene_coords_df['chrom'].unique():
+                chrom_df = self.gene_coords_df.filter(pl.col('chrom') == chrom)
+                if not chrom_df.is_empty():
+                    chrom_sizes[chrom] = chrom_df['end'].max()
             
             # Run permutations in parallel using proper multiprocessing approach
             num_threads = self.config.num_threads

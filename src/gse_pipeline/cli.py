@@ -8,8 +8,9 @@ import logging
 import sys
 from pathlib import Path
 import tomli
-from .core.pipeline import GeneSetEnrichmentPipeline
-from .core.config import PipelineConfig
+from tomli_w import dump
+from .pipeline import GeneSetEnrichmentPipeline
+from .config import PipelineConfig
 
 def parse_args():
     """Parse command line arguments."""
@@ -254,7 +255,7 @@ def main():
     # Save updated config to a temporary file
     temp_config_path = Path(args.config_file).parent / "temp_config.toml"
     with open(temp_config_path, 'wb') as f:
-        tomli.dump(config, f)
+        dump(config, f)
     
     try:
         # Initialize and run pipeline
@@ -268,4 +269,4 @@ def main():
         temp_config_path.unlink()
 
 if __name__ == "__main__":
-    main() 
+    main()
