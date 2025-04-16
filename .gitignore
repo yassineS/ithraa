@@ -1,6 +1,6 @@
 .coverage
 .venv
-.uv.lock
+uv.lock
 *.egg-info
 __pycache__
 *.pyc
