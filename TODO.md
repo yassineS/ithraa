@@ -1,21 +1,21 @@
 ### TODO list for the project
 
--[] Documentation
--[] Github pages
--[] Testing vs. perl
--[] Benchmarking vs. perl
--[] Write parquet files
--[] Parallelise
--[x] CLI
--[] Example data
--[x] unittesting
--[] Mahalanobis distance matching
--[] Parallelise the "Processing thresholds" steps
--[] don't print thresholds to console, but write to log file. 
--[] Add timestamp to logfile name. 
--[] what does "interest" parameter in input do?
--[] use "population" parameter to select a subset of populations from the input ranks file.
--[] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'
-- [] what does the parameters do:
-	- [] prefix = "all_ihsfreqafr_ranks"
-	- [] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
+- [ ] Documentation
+- [ ] Github pages
+- [ ] Testing vs. perl
+- [ ] Benchmarking vs. perl
+- [ ] Write parquet files
+- [x] Parallelise FDR
+- [x] CLI
+- [ ] Example data
+- [x] Pytest
+- [ ] Mahalanobis distance matching
+- [ ] Parallelise the "Processing thresholds" steps
+- [ ] don't print thresholds to console, but write to log file.
+- [ ] Add timestamp to logfile name.
+- [x] what does "interest" parameter in input do?
+- [ ] use "population" parameter to select a subset of populations from the input ranks file.
+- [x] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'.
+- [ ] Check and clean if necessary the legacy parameters:
+	- [ ] prefix = "all_ihsfreqafr_ranks"
+	- [ ] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]

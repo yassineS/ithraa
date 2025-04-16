@@ -42,8 +42,6 @@ interrupted = false
 
 # Sweep parameters
 [sweep]
-# prefix = "all_ihsfreqafr_ranks"
-# sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
 count = false
 run_count = true
 

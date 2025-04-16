@@ -148,17 +148,6 @@ def parse_args():
     # Sweep parameter overrides
     sweep_group = parser.add_argument_group("Sweep parameter overrides")
     sweep_group.add_argument(
-        "--sweep-prefix",
-        type=str,
-        help="Override sweep prefix"
-    )
-    sweep_group.add_argument(
-        "--sweep-sizes",
-        type=str,
-        nargs="+",
-        help="Override sweep sizes"
-    )
-    sweep_group.add_argument(
         "--no-count",
         action="store_true",
         help="Disable sweep counting"
@@ -226,10 +215,6 @@ def update_config(config: dict, args: argparse.Namespace):
         config['fdr']['interrupted'] = True
     
     # Sweep parameter overrides
-    if args.sweep_prefix:
-        config['sweep']['prefix'] = args.sweep_prefix
-    if args.sweep_sizes:
-        config['sweep']['sizes'] = args.sweep_sizes
     if args.no_count:
         config['sweep']['count'] = False
     if args.no_run_count:
