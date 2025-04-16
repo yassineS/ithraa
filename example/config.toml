@@ -2,14 +2,14 @@
 
 # Input files
 [input]
-gene_list_file = "examples/data/gene_ranks_ihs-1000kb_1kgp_afr.txt"
-gene_set = "examples/vips/temp_inter_rsv_march2017" # set of disease genes or VIPs.
-gene_coords_file = "examples/data/gene_coords_ensembl_v69.txt"
-factors_file = "examples/data/factors.txt"
+gene_list_file = "example/data/gene_ranks_ihs-1000kb_1kgp_afr.txt"
+gene_set = "example/vips/temp_inter_rsv_march2017" # set of disease genes or VIPs.
+gene_coords_file = "example/data/gene_coords_ensembl_v69.txt"
+factors_file = "example/data/factors.txt"
 
 # Input filtering
-valid_genes_file = "examples/data/valid_genes.txt" # used to filter the gene list, e.g. only keep protein coding (CDS)
-hgnc_file = "ensembl_HGNC_file.txt" # Optional file used to primarily filter out HLA
+valid_genes_file = "example/data/valid_genes.txt" # used to filter the gene list, e.g. only keep protein coding (CDS)
+hgnc_file = "example/data/ensembl_HGNC_file.txt" # Optional file used to primarily filter out HLA
 special_filtered_genes = ["HLA", "OR", "HIST"]
 
 # Output configuration
@@ -58,4 +58,4 @@ list = [
     5000, 4000, 3000, 2500, 2000, 1500, 1000, 900, 800, 700,
     600, 500, 450, 400, 350, 300, 250, 200, 150, 100,
     90, 80, 70, 60, 50, 40, 30, 25, 20, 15, 10
-] 
+]
