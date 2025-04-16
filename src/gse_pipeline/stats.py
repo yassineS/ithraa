@@ -31,13 +31,12 @@ def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) 
     else:
         enrichment_ratio = target_mean / control_mean
     
-    # Check if arrays are nearly identical to avoid precision warnings
-    # Use more rigorous check to compare distributions
-    if (np.abs(target_mean - control_mean) < 1e-10 or
-            np.allclose(target_counts, control_counts, rtol=1e-10, atol=1e-10) or
-            (np.std(target_counts) < 1e-10 and np.std(control_counts) < 1e-10)):
-        p_value = 1.0  # If the data is practically identical, there's no significant difference
+    # Check if means are nearly identical to avoid precision warnings
+    # Don't try to compare the arrays directly if they have different shapes
+    if np.abs(target_mean - control_mean) < 1e-10:
+        p_value = 1.0  # If the means are practically identical, there's no significant difference
     else:
+        # Use Welch's t-test which doesn't assume equal variances or equal sample sizes
         _, p_value = stats.ttest_ind(target_counts, control_counts, equal_var=False)
     
     return {

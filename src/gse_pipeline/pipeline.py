@@ -184,10 +184,12 @@ class GeneSetEnrichmentPipeline:
             self.logger.info("Step 8: Performing bootstrap analysis")
             bootstrap_iterations = self.config.config.get('bootstrap', {}).get('iterations', 1000)
             bootstrap_runs = self.config.config.get('bootstrap', {}).get('runs', 10)
-            num_threads = self.config.num_threads
             
-            # Define bootstrap function for multiprocessing
-            def bootstrap_population(population):
+            # Run bootstrap analysis sequentially for each population
+            bootstrap_results = {}
+            
+            for population in self.population_names:
+                self.logger.info(f"Running bootstrap analysis for population: {population}")
                 population_results = []
                 
                 # Get scores for target and control genes
@@ -204,7 +206,7 @@ class GeneSetEnrichmentPipeline:
                 )[population].to_numpy()
                 
                 # Run multiple bootstrap analyses
-                for _ in range(bootstrap_runs):
+                for run_idx in range(bootstrap_runs):
                     # Resample target scores
                     target_bootstrap = bootstrap_analysis(
                         target_scores,
@@ -224,21 +226,10 @@ class GeneSetEnrichmentPipeline:
                             if control_bootstrap['mean'] != 0 else float('nan'),
                         'target_minus_control': target_bootstrap['mean'] - control_bootstrap['mean'],
                     })
-                
-                return population, population_results
+                    
+                bootstrap_results[population] = population_results
             
-            # Run bootstrap analysis in parallel
-            bootstrap_results = {}
-            if num_threads > 1:
-                with multiprocessing.Pool(processes=min(num_threads, len(self.population_names))) as pool:
-                    for population, pop_results in pool.map(bootstrap_population, self.population_names):
-                        bootstrap_results[population] = pop_results
-            else:
-                for population in self.population_names:
-                    population, pop_results = bootstrap_population(population)
-                    bootstrap_results[population] = pop_results
-            
-            # Add bootstrap results
+            # Add bootstrap results to the main results
             for population in self.population_names:
                 results[population]['bootstrap'] = bootstrap_results[population]
         
@@ -255,8 +246,12 @@ class GeneSetEnrichmentPipeline:
             ).to_dicts():
                 chrom_sizes[row['chrom']] = row['size']
             
-            # Define permutation function for multiprocessing
-            def perform_permutation(iteration):
+            # Run permutations sequentially
+            permutation_results = []
+            
+            self.logger.info(f"Running {fdr_iterations} permutations")
+            
+            for i in tqdm(range(fdr_iterations), desc="FDR Permutations"):
                 # Shuffle gene coordinates
                 shuffled_coords = shuffle_genome(self.gene_coords_df, chrom_sizes)
                 
@@ -301,23 +296,7 @@ class GeneSetEnrichmentPipeline:
                     else:
                         iter_results[population] = float('nan')
                 
-                return iter_results
-            
-            # Run permutations in parallel
-            permutation_results = []
-            num_threads = self.config.num_threads
-            
-            self.logger.info(f"Running {fdr_iterations} permutations with {num_threads} threads")
-            
-            if num_threads > 1:
-                with multiprocessing.Pool(processes=num_threads) as pool:
-                    with tqdm(total=fdr_iterations, desc="FDR Permutations") as pbar:
-                        for result in pool.imap_unordered(perform_permutation, range(fdr_iterations)):
-                            permutation_results.append(result)
-                            pbar.update()
-            else:
-                for i in tqdm(range(fdr_iterations), desc="FDR Permutations"):
-                    permutation_results.append(perform_permutation(i))
+                permutation_results.append(iter_results)
             
             # Calculate empirical p-values
             for population in self.population_names:
