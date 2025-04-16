@@ -1,3 +1,5 @@
+### TODO list for the project
+
 -[] Documentation
 -[] Github pages
 -[] Testing vs. perl
@@ -6,5 +8,11 @@
 -[] Parallelise
 -[] CLI
 -[] Example data
--[] unittesting
+-[x] unittesting
 -[] Mahalanobis distance matching
+-[] Parallelise the "Processing thresholds" steps
+-[] don't print thresholds to console, but write to log file. 
+-[] Add timestamp to logfile name. 
+-[] what does "interest" parameter in input do?
+-[] use "population" parameter to select a subset of populations from the input ranks file.
+-[] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'
