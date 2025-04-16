@@ -63,6 +63,18 @@ def load_gene_coords(file_path: Path) -> pl.DataFrame:
     Load gene coordinates.
     
     Args:
+        file_path: Path to gene coordinates file
+        
+    Returns:
+        DataFrame with gene_id, chrom, start, and end columns
+    """
+    return pl.read_csv(
+        file_path,
+        separator='\t',
+        has_header=True,
+        columns=['gene_id', 'chrom', 'start', 'end']
+    )
+
 def load_factors(file_path: Path) -> pl.DataFrame:
     """
     Load confounding factors.
@@ -406,4 +418,4 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
                 'end': int(ends[i])
             })
     
-    return pl.DataFrame(shuffled) 
+    return pl.DataFrame(shuffled)
