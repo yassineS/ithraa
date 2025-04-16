@@ -1,0 +1,61 @@
+# Pipeline configuration parameters
+
+# Input files
+[input]
+gene_list_file = "examples/data/gene_ranks_ihs-1000kb_1kgp_afr.txt"
+gene_set = "examples/vips/temp_inter_rsv_march2017" # set of disease genes or VIPs.
+gene_coords_file = "examples/data/gene_coords_ensembl_v69.txt"
+factors_file = "examples/data/factors.txt"
+
+# Input filtering
+valid_genes_file = "examples/data/valid_genes.txt" # used to filter the gene list, e.g. only keep protein coding (CDS)
+hgnc_file = "ensembl_HGNC_file.txt" # Optional file used to primarily filter out HLA
+special_filtered_genes = ["HLA", "OR", "HIST"]
+
+# Output configuration
+[output]
+directory = "results"
+save_intermediate = false
+
+# Analysis parameters
+[analysis]
+min_distance = 300000
+tolerance_range = 0.5
+max_rep = 10
+flip = false
+cluster_distance = 500000
+num_threads = 4  # Number of threads to use for parallel processing
+
+# Bootstrap parameters
+[bootstrap]
+run = true
+iterations = 100
+runs = 1
+simultaneous_runs = 25
+
+# FDR parameters
+[fdr]
+run = true
+number = 1000
+shuffling_segments = 10
+interrupted = false
+
+# Sweep parameters
+[sweep]
+prefix = "all_ihsfreqafr_ranks"
+sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
+count = false
+run_count = true
+
+# Population parameters
+[population]
+groups = ["AFR", "AFR", "AFR", "AFR", "AFR"]
+interest = "ESN"
+
+# Threshold parameters
+[threshold]
+list = [
+    5000, 4000, 3000, 2500, 2000, 1500, 1000, 900, 800, 700,
+    600, 500, 450, 400, 350, 300, 250, 200, 150, 100,
+    90, 80, 70, 60, 50, 40, 30, 25, 20, 15, 10
+] 
