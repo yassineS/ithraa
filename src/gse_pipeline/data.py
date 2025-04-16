@@ -37,32 +37,32 @@ def load_gene_set(file_path: Path) -> pl.DataFrame:
         file_path: Path to gene set file
         
     Returns:
-        DataFrame with gene_id and gene_set_name columns
+        DataFrame with gene_id column
     """
-    return pl.read_csv(
+    df = pl.read_csv(
         file_path,
         separator='\t',
-        has_header=True,
-        columns=['gene_id', 'gene_set_name']
+        has_header=True
     )
+    
+    # Check if this is the RSV format with 'gene_id' and 'rsv' columns
+    if 'rsv' in df.columns:
+        # Filter to include only genes marked as 'yes'
+        df = df.filter(pl.col('rsv') == 'yes')
+        # Keep only the gene_id column since we've already filtered
+        df = df.select(['gene_id'])
+    elif 'gene_set_name' not in df.columns:
+        # If neither expected format is found, just assume the first column is gene_id
+        # and keep only those genes (no filtering)
+        df = df.select([df.columns[0]]).rename({df.columns[0]: 'gene_id'})
+    
+    return df
 
 def load_gene_coords(file_path: Path) -> pl.DataFrame:
     """
     Load gene coordinates.
     
     Args:
-        file_path: Path to gene coordinates file
-        
-    Returns:
-        DataFrame with gene_id, chrom, start, and end columns
-    """
-    return pl.read_csv(
-        file_path,
-        separator='\t',
-        has_header=True,
-        columns=['gene_id', 'chrom', 'start', 'end']
-    )
-
 def load_factors(file_path: Path) -> pl.DataFrame:
     """
     Load confounding factors.
