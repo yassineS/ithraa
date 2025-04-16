@@ -2,6 +2,7 @@
 
 import os
 import tomli
+import tomli_w  # Added import for writing TOML files
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any, Union
 
@@ -45,6 +46,11 @@ class PipelineConfig:
         # Extract number of threads
         self.num_threads = self.config.get("num_threads", 
                                         os.cpu_count() if os.cpu_count() else 4)
+                                        
+        # Extract population settings
+        self.population_config = self.config.get("population", {})
+        self.selected_population = self.population_config.get("population", None)
+        self.population_interest = self.population_config.get("interest", self.selected_population)
     
     def get_rank_thresholds(self) -> List[int]:
         """Get the rank thresholds for the analysis.
@@ -53,3 +59,12 @@ class PipelineConfig:
             List of rank threshold values in descending order
         """
         return sorted(self.rank_thresholds, reverse=True)
+        
+    def save_config(self, output_path: Union[str, Path]) -> None:
+        """Save the configuration to a TOML file.
+        
+        Args:
+            output_path: Path to save the configuration file
+        """
+        with open(output_path, "wb") as f:
+            tomli_w.dump(self.config, f)

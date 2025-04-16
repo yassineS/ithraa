@@ -6,7 +6,7 @@
 -[] Benchmarking vs. perl
 -[] Write parquet files
 -[] Parallelise
--[] CLI
+-[x] CLI
 -[] Example data
 -[x] unittesting
 -[] Mahalanobis distance matching

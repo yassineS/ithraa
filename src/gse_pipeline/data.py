@@ -8,12 +8,13 @@ import numpy as np
 from pathlib import Path
 import logging
 
-def load_gene_list(file_path: Path) -> Tuple[pl.DataFrame, List[str]]:
+def load_gene_list(file_path: Path, selected_population: Optional[str] = None) -> Tuple[pl.DataFrame, List[str]]:
     """
     Load gene list with scores for multiple populations.
     
     Args:
         file_path: Path to gene list file
+        selected_population: Optional specific population to filter for (from config)
         
     Returns:
         Tuple of (DataFrame with gene_id and population scores, list of population names)
@@ -25,8 +26,22 @@ def load_gene_list(file_path: Path) -> Tuple[pl.DataFrame, List[str]]:
         has_header=True
     )
     
-    # Get population names from header (all columns except gene_id)
-    population_names = [col for col in df.columns if col != 'gene_id']
+    # Get all available population names from header (all columns except gene_id)
+    all_population_names = [col for col in df.columns if col != 'gene_id']
+    
+    # If a specific population is requested, filter for just that one
+    if selected_population is not None:
+        if selected_population in all_population_names:
+            # Only keep the gene_id and the selected population column
+            population_names = [selected_population]
+            df = df.select(['gene_id'] + population_names)
+            logging.info(f"Filtered gene list to only include the {selected_population} population")
+        else:
+            logging.warning(f"Selected population '{selected_population}' not found in data. "
+                           f"Available populations: {', '.join(all_population_names)}")
+            population_names = all_population_names
+    else:
+        population_names = all_population_names
     
     return df, population_names
 
