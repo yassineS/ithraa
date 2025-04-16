@@ -1,0 +1,10 @@
+-[] Documentation
+-[] Github pages
+-[] Testing vs. perl
+-[] Benchmarking vs. perl
+-[] Write parquet files
+-[] Parallelise
+-[] CLI
+-[] Example data
+-[] unittesting
+-[] Mahalanobis distance matching
