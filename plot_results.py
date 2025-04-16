@@ -1,32 +1,41 @@
 #!/usr/bin/env python3
 """
-Script to plot gene set enrichment results.
+Script to plot gene set enrichment results with threshold rank analysis.
+This version matches the style of the original Gene_Set_Enrichment_Pipeline plots.
 """
 
 import os
 import sys
 import argparse
-import json
+import glob
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
-import matplotlib.patches as mpatches
+
+# Set the style to match the original plots
+plt.style.use('seaborn-v0_8-whitegrid')
+sns.set_context("paper", font_scale=1.2)
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Plot gene set enrichment results"
+        description="Plot gene set enrichment results from thresholded data"
     )
     
-    # Required arguments
     parser.add_argument(
         "--results-dir",
         type=str,
         default="results",
         help="Path to results directory (default: results)"
+    )
+    
+    parser.add_argument(
+        "--gene-set",
+        type=str,
+        help="Name of the gene set to visualize (without path or extension)"
     )
     
     parser.add_argument(
@@ -37,16 +46,10 @@ def parse_args():
     )
     
     parser.add_argument(
-        "--gene-set",
-        type=str,
-        help="Name of the gene set (for plot titles)"
-    )
-    
-    parser.add_argument(
-        "--save-format",
+        "--format",
         type=str,
         default="png",
-        choices=["png", "pdf", "svg", "jpg"],
+        choices=["png", "pdf", "svg"],
         help="Format for saving plots (default: png)"
     )
     
@@ -59,249 +62,317 @@ def parse_args():
     
     return parser.parse_args()
 
-def load_results(results_dir):
+def parse_legacy_results(results_file_path):
     """
-    Load enrichment results from the results directory.
+    Parse results file from the new pipeline format to match original pipeline data.
     
-    Args:
-        results_dir: Path to results directory
-        
+    Format: threshold population enrichment_ratio observed expected ci_low ci_high p-value
+    
     Returns:
-        dict: Enrichment results data
+        DataFrame with parsed data
     """
-    results_path = Path(results_dir) / "data" / "enrichment_results.json"
-    summary_path = Path(results_dir) / "data" / "enrichment_summary.csv"
+    data = []
+    with open(results_file_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 7:  # Proper format for threshold data line
+                try:
+                    threshold = int(parts[0])
+                    pop_name = parts[1].strip(':')
+                    
+                    # Skip metadata rows
+                    if pop_name in ["OUT", "Group_ratio"]:
+                        continue
+                        
+                    enrichment = float(parts[2])
+                    observed = float(parts[3])
+                    expected = float(parts[4])
+                    ci_low = float(parts[5])
+                    ci_high = float(parts[6])
+                    p_value = float(parts[7]) if len(parts) > 7 else None
+                    
+                    data.append({
+                        'Threshold': threshold,
+                        'Population': pop_name,
+                        'EnrichmentRatio': enrichment,
+                        'Observed': observed,
+                        'Expected': expected,
+                        'CI_Low': ci_low,
+                        'CI_High': ci_high,
+                        'P_Value': p_value,
+                        'Significant': (p_value is not None and p_value <= 0.05)
+                    })
+                except (ValueError, IndexError):
+                    continue  # Skip malformed lines
     
-    if not results_path.exists():
-        raise FileNotFoundError(f"Results file not found: {results_path}")
-    
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Summary file not found: {summary_path}")
-    
-    # Load the full results JSON
-    with open(results_path, 'r') as f:
-        results = json.load(f)
-    
-    # Load the summary CSV
-    summary = pd.read_csv(summary_path)
-    
-    return {
-        'full_results': results,
-        'summary': summary
-    }
+    return pd.DataFrame(data)
 
-def plot_enrichment_barplot(summary, output_path, gene_set_name=None, figsize=(10, 6), dpi=300, format="png"):
+def find_results_file(results_dir, gene_set=None):
+    """Find and identify the results file in the results directory."""
+    data_dir = Path(results_dir) / 'data'
+    
+    # If gene_set is provided, look for that specific file
+    if gene_set:
+        filename = f"{gene_set}_results.txt"
+        file_path = data_dir / filename
+        if file_path.exists():
+            return file_path
+    
+    # Otherwise, find all *_results.txt files and use the first one
+    result_files = list(data_dir.glob('*_results.txt'))
+    if result_files:
+        return result_files[0]
+    
+    # If no results file found, raise error
+    raise FileNotFoundError(f"No results file found in {data_dir}")
+
+def plot_threshold_enrichment(results_df, output_path, gene_set=None, figsize=(14, 8), dpi=300, format='png'):
     """
-    Create a bar plot of enrichment ratios for all populations.
+    Create a plot of enrichment ratios across different thresholds for all populations.
     
     Args:
-        summary: DataFrame with enrichment summary
+        results_df: DataFrame with parsed results
         output_path: Path to save the plot
-        gene_set_name: Name of gene set for the title
+        gene_set: Name of the gene set for the title (optional)
         figsize: Figure size (width, height) in inches
         dpi: DPI for saving the plot
-        format: File format for saving the plot
+        format: Format for saving the plot (png, pdf, svg)
     """
+    # Sort by threshold (descending)
+    results_df = results_df.sort_values('Threshold', ascending=False)
+    
+    # Get populations and thresholds
+    populations = sorted(results_df['Population'].unique())
+    thresholds = sorted(results_df['Threshold'].unique(), reverse=True)
+    
+    # Create figure
     plt.figure(figsize=figsize)
     
-    # Create a custom color list based on significance
-    colors = ["#c03a2b" if sig else "#7f8c8d" for sig in summary["Significant"]]
-    
-    # Create the bar plot using the newer seaborn API
-    ax = sns.barplot(
-        x="Population",
-        y="EnrichmentRatio",
-        data=summary,
-        color="#7f8c8d"  # Default color
-    )
-    
-    # Set the bar colors manually
-    for i, patch in enumerate(ax.patches):
-        patch.set_facecolor(colors[i])
-    
-    # Add a horizontal line at y=1 (no enrichment)
-    plt.axhline(y=1, color="black", linestyle="--", alpha=0.7)
-    
-    # Add value labels on top of each bar
-    for i, v in enumerate(summary["EnrichmentRatio"]):
-        ax.text(
-            i,
-            v + 0.05,
-            f"{v:.2f}",
-            ha="center",
-            fontsize=9
+    # Plot enrichment ratios for each population
+    for i, pop in enumerate(populations):
+        pop_data = results_df[results_df['Population'] == pop]
+        
+        # Sort by threshold (descending)
+        pop_data = pop_data.sort_values('Threshold')
+        
+        plt.plot(
+            pop_data['Threshold'], 
+            pop_data['EnrichmentRatio'], 
+            marker='o', 
+            linestyle='-', 
+            linewidth=2,
+            label=pop
         )
-    
-    # Add significance stars
-    for i, (_, row) in enumerate(summary.iterrows()):
-        if row["Significant"]:
-            ax.text(
-                i,
-                row["EnrichmentRatio"] + 0.15,
-                "*",
-                ha="center",
-                fontsize=16,
-                fontweight="bold"
+        
+        # Mark significant points with stars
+        sig_points = pop_data[pop_data['Significant']]
+        if not sig_points.empty:
+            plt.plot(
+                sig_points['Threshold'],
+                sig_points['EnrichmentRatio'],
+                'k*',
+                markersize=10,
             )
     
-    # Customize the plot
-    plt.xlabel("Population", fontsize=12)
-    plt.ylabel("Enrichment Ratio", fontsize=12)
+    # Add a horizontal line at y=1 (no enrichment)
+    plt.axhline(y=1, color='black', linestyle='--', alpha=0.7, linewidth=1.5)
     
-    title = "Gene Set Enrichment Results"
-    if gene_set_name:
-        title += f" - {gene_set_name}"
-    plt.title(title, fontsize=14)
+    plt.xscale('log')  # Log scale for the x-axis (thresholds)
+    plt.grid(True, which="both", ls="-", alpha=0.2)
     
-    # Add a legend
-    red_patch = mpatches.Patch(color="#c03a2b", label="Significant")
-    gray_patch = mpatches.Patch(color="#7f8c8d", label="Not Significant")
-    plt.legend(handles=[red_patch, gray_patch], loc="best")
+    # Add labels and title
+    plt.xlabel('Rank Threshold', fontsize=14, fontweight='bold')
+    plt.ylabel('Enrichment Ratio', fontsize=14, fontweight='bold')
     
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(output_path / f"enrichment_barplot.{format}", dpi=dpi, format=format)
-    plt.close()
-
-def plot_pvalue_heatmap(summary, output_path, gene_set_name=None, figsize=(8, 6), dpi=300, format="png"):
-    """
-    Create a heatmap of p-values for all populations.
+    title = "Gene Set Enrichment by Rank Threshold"
+    if gene_set:
+        title += f" - {gene_set}"
+    plt.title(title, fontsize=16, fontweight='bold')
     
-    Args:
-        summary: DataFrame with enrichment summary
-        output_path: Path to save the plot
-        gene_set_name: Name of gene set for the title
-        figsize: Figure size (width, height) in inches
-        dpi: DPI for saving the plot
-        format: File format for saving the plot
-    """
-    # Extract p-values to plot
-    pvals = summary[["Population", "PValue", "FDRCorrectedPValue", "EmpiricalPValue"]]
-    pvals = pvals.melt(
-        id_vars=["Population"],
-        var_name="P-value Type",
-        value_name="P-value"
-    )
-    
-    # Replace column names for better labels
-    pvals["P-value Type"] = pvals["P-value Type"].replace({
-        "PValue": "Nominal",
-        "FDRCorrectedPValue": "FDR Corrected",
-        "EmpiricalPValue": "Empirical"
-    })
-    
-    # Create a pivot table for the heatmap
-    pivot = pvals.pivot(
-        index="Population",
-        columns="P-value Type",
-        values="P-value"
-    )
-    
-    # Set up color map (white to dark blue)
-    cmap = LinearSegmentedColormap.from_list("", ["white", "#2c3e50"])
-    
-    plt.figure(figsize=figsize)
-    
-    # Create the heatmap
-    ax = sns.heatmap(
-        pivot,
-        cmap=cmap,
-        annot=True,
-        fmt=".3f",
-        linewidths=.5,
-        vmin=0,
-        vmax=1
-    )
-    
-    # Customize the plot
-    plt.title(f"P-values {gene_set_name or ''}", fontsize=14)
+    plt.legend(title="Population", loc='best', frameon=True)
     plt.tight_layout()
     
-    plt.savefig(output_path / f"pvalue_heatmap.{format}", dpi=dpi, format=format)
+    # Save the figure
+    output_file = output_path / f"threshold_enrichment.{format}"
+    plt.savefig(output_file, dpi=dpi, format=format)
     plt.close()
+    
+    return output_file
 
-def plot_bootstrap_distributions(results, output_path, gene_set_name=None, figsize=(12, 8), dpi=300, format="png"):
+def plot_population_enrichment(results_df, output_path, gene_set=None, figsize=(15, 10), dpi=300, format='png'):
     """
-    Plot bootstrap distributions for each population.
+    Create individual plots for each population showing enrichment ratio across thresholds.
     
     Args:
-        results: Dictionary with full results data
+        results_df: DataFrame with parsed results
         output_path: Path to save the plot
-        gene_set_name: Name of gene set for the title
+        gene_set: Name of the gene set for the title (optional)
         figsize: Figure size (width, height) in inches
         dpi: DPI for saving the plot
-        format: File format for saving the plot
+        format: Format for saving the plot (png, pdf, svg)
     """
-    # Check if bootstrap results exist
-    has_bootstrap = False
-    for pop, data in results['full_results'].items():
-        if 'bootstrap' in data:
-            has_bootstrap = True
-            break
-    
-    if not has_bootstrap:
-        print("No bootstrap results found, skipping bootstrap distribution plot")
-        return
-    
-    # Get all populations
-    populations = list(results['full_results'].keys())
+    # Get populations
+    populations = sorted(results_df['Population'].unique())
     n_pops = len(populations)
     
     # Determine grid dimensions
     n_cols = min(3, n_pops)
     n_rows = (n_pops + n_cols - 1) // n_cols  # Ceiling division
     
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-    if n_pops == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
+    # Create a figure with subplots
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharey=True)
+    axes = np.array(axes).flatten()  # Convert to 1D array for easy indexing
     
+    # Sort by threshold (ascending order for plotting)
+    results_df = results_df.sort_values('Threshold')
+    
+    # Plot each population in its own subplot
     for i, pop in enumerate(populations):
         if i >= len(axes):
             break
             
         ax = axes[i]
-        pop_data = results['full_results'][pop]
+        pop_data = results_df[results_df['Population'] == pop]
         
-        if 'bootstrap' not in pop_data or not pop_data['bootstrap']:
-            continue
+        # Plot enrichment ratio
+        ax.plot(
+            pop_data['Threshold'], 
+            pop_data['EnrichmentRatio'], 
+            marker='o', 
+            linestyle='-', 
+            linewidth=2,
+            color='#1f77b4'  # Blue color
+        )
         
-        # Get enrichment ratios from bootstrap results
-        ratios = [b.get('enrichment_ratio', np.nan) for b in pop_data['bootstrap']]
-        ratios = [r for r in ratios if not np.isnan(r)]
+        # Add confidence interval range
+        ax.fill_between(
+            pop_data['Threshold'],
+            pop_data['Expected'] - (pop_data['Expected'] - pop_data['CI_Low']),
+            pop_data['Expected'] + (pop_data['CI_High'] - pop_data['Expected']),
+            alpha=0.2,
+            color='#1f77b4',
+            label='95% CI'
+        )
         
-        if not ratios:
-            continue
-            
-        # Plot distribution
-        sns.histplot(ratios, kde=True, ax=ax)
+        # Add horizontal line at y=1 (no enrichment)
+        ax.axhline(y=1, color='black', linestyle='--', alpha=0.7, linewidth=1.5)
         
-        # Add vertical line for observed value
-        observed = pop_data['enrichment_ratio']
-        ax.axvline(observed, color='red', linestyle='--', 
-                   label=f'Observed: {observed:.3f}')
+        # Mark significant points with stars
+        sig_points = pop_data[pop_data['Significant']]
+        if not sig_points.empty:
+            ax.plot(
+                sig_points['Threshold'],
+                sig_points['EnrichmentRatio'],
+                'k*',
+                markersize=10,
+            )
         
-        # Add p-value
-        pvalue = pop_data.get('p_value', np.nan)
-        if not np.isnan(pvalue):
-            ax.text(0.05, 0.95, f'p-value: {pvalue:.3f}', 
-                    transform=ax.transAxes, fontsize=9,
-                    verticalalignment='top')
+        # Configure axis
+        ax.set_xscale('log')  # Log scale for the x-axis (thresholds)
+        ax.grid(True, which="both", ls="-", alpha=0.2)
+        ax.set_title(f"{pop}", fontsize=14, fontweight='bold')
+        ax.set_xlabel('Rank Threshold', fontsize=12)
         
-        ax.set_title(pop)
-        ax.set_xlabel('Enrichment Ratio')
-        ax.set_ylabel('Frequency')
-        ax.legend()
+        if i % n_cols == 0:  # Only for leftmost plots
+            ax.set_ylabel('Enrichment Ratio', fontsize=12)
     
-    # Hide empty subplots
+    # Hide unused subplots
     for j in range(i + 1, len(axes)):
-        axes[j].set_visible(False)
+        axes[j].axis('off')
     
-    plt.suptitle(f"Bootstrap Distributions {gene_set_name or ''}", fontsize=16)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust for the suptitle
+    # Add a single title for the entire figure
+    title = "Population Enrichment Patterns by Rank Threshold"
+    if gene_set:
+        title += f" - {gene_set}"
+    fig.suptitle(title, fontsize=16, fontweight='bold')
     
-    plt.savefig(output_path / f"bootstrap_distributions.{format}", dpi=dpi, format=format)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])  # Leave space for the title
+    
+    # Save the figure
+    output_file = output_path / f"population_enrichment.{format}"
+    plt.savefig(output_file, dpi=dpi, format=format)
     plt.close()
+    
+    return output_file
+
+def plot_heatmap(results_df, output_path, gene_set=None, metric='EnrichmentRatio', 
+                figsize=(12, 8), dpi=300, format='png'):
+    """
+    Create a heatmap of enrichment ratios or p-values across populations and thresholds.
+    
+    Args:
+        results_df: DataFrame with parsed results
+        output_path: Path to save the plot
+        gene_set: Name of the gene set for the title (optional)
+        metric: Metric to plot ('EnrichmentRatio' or 'P_Value')
+        figsize: Figure size (width, height) in inches
+        dpi: DPI for saving the plot
+        format: Format for saving the plot (png, pdf, svg)
+    """
+    # Pivot the data to create a matrix with thresholds as rows and populations as columns
+    pivot_df = results_df.pivot(index='Threshold', columns='Population', values=metric)
+    
+    # Sort thresholds in descending order
+    pivot_df = pivot_df.sort_index(ascending=False)
+    
+    # Create figure
+    plt.figure(figsize=figsize)
+    
+    # Set up custom colormap based on the metric
+    if metric == 'EnrichmentRatio':
+        # Blue-white-red colormap for enrichment ratio (centered at 1.0)
+        cmap = LinearSegmentedColormap.from_list('custom_diverging', 
+                                               [(0, '#3b4cc0'), (0.5, 'white'), (1.0, '#b40426')])
+        vmin = min(0.5, pivot_df.values.min())
+        vmax = max(1.5, pivot_df.values.max())
+        vcenter = 1.0
+        cbar_label = "Enrichment Ratio"
+        
+        # For enrichment ratio, we also want to mark significant values
+        sig_mask = results_df.pivot(index='Threshold', columns='Population', values='Significant')
+        sig_mask = sig_mask.sort_index(ascending=False)
+        
+    else:  # P-value
+        # White-blue colormap for p-values
+        cmap = 'Blues_r'  # Reversed Blues colormap (darker = smaller p-value)
+        vmin = 0
+        vmax = 0.2  # Cap at 0.2 for better color resolution at significant values
+        vcenter = None
+        cbar_label = "P-value"
+        sig_mask = None
+    
+    # Create the heatmap
+    ax = sns.heatmap(pivot_df, annot=True, fmt='.2f', cmap=cmap, 
+                    vmin=vmin, vmax=vmax, center=vcenter,
+                    cbar_kws={'label': cbar_label})
+    
+    # Optionally, mark significant values with a star marker
+    if sig_mask is not None and metric == 'EnrichmentRatio':
+        for i in range(sig_mask.shape[0]):
+            for j in range(sig_mask.shape[1]):
+                if sig_mask.iloc[i, j]:
+                    ax.text(j + 0.5, i + 0.85, '*',
+                            ha='center', va='center', color='black',
+                            fontsize=15, fontweight='bold')
+    
+    # Customize the plot
+    ax.set_xlabel('Population', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Rank Threshold', fontsize=14, fontweight='bold')
+    
+    title = f"{cbar_label} Heatmap by Rank Threshold"
+    if gene_set:
+        title += f" - {gene_set}"
+    ax.set_title(title, fontsize=16, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    # Save the figure
+    metric_name = "enrichment" if metric == 'EnrichmentRatio' else "pvalue"
+    output_file = output_path / f"{metric_name}_heatmap.{format}"
+    plt.savefig(output_file, dpi=dpi, format=format)
+    plt.close()
+    
+    return output_file
 
 def main():
     """Main entry point for the script."""
@@ -311,51 +382,69 @@ def main():
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Load results
     try:
-        results = load_results(args.results_dir)
+        # Find results file
+        results_file = find_results_file(args.results_dir, args.gene_set)
+        print(f"Found results file: {results_file}")
+        
+        # Parse results
+        results_df = parse_legacy_results(results_file)
+        
+        if results_df.empty:
+            print("No valid data found in results file.")
+            sys.exit(1)
+        
+        # Get gene set name from file if not provided
+        gene_set_name = args.gene_set
+        if not gene_set_name:
+            gene_set_name = Path(results_file).stem.replace('_results', '')
+        
+        # Create plots
+        threshold_plot = plot_threshold_enrichment(
+            results_df, 
+            output_path, 
+            gene_set_name, 
+            dpi=args.dpi, 
+            format=args.format
+        )
+        print(f"Created threshold enrichment plot: {threshold_plot}")
+        
+        population_plot = plot_population_enrichment(
+            results_df, 
+            output_path, 
+            gene_set_name, 
+            dpi=args.dpi, 
+            format=args.format
+        )
+        print(f"Created population enrichment plot: {population_plot}")
+        
+        # Create enrichment ratio heatmap
+        enrichment_heatmap = plot_heatmap(
+            results_df, 
+            output_path, 
+            gene_set_name, 
+            metric='EnrichmentRatio', 
+            dpi=args.dpi,
+            format=args.format
+        )
+        print(f"Created enrichment ratio heatmap: {enrichment_heatmap}")
+        
+        # Create p-value heatmap
+        pvalue_heatmap = plot_heatmap(
+            results_df, 
+            output_path, 
+            gene_set_name, 
+            metric='P_Value',
+            dpi=args.dpi,
+            format=args.format
+        )
+        print(f"Created p-value heatmap: {pvalue_heatmap}")
+        
+        print(f"All plots saved to {output_path}")
+        
     except FileNotFoundError as e:
         print(f"Error: {e}")
         sys.exit(1)
-    
-    # Extract gene set name from config if not provided
-    gene_set_name = args.gene_set
-    if not gene_set_name:
-        config_path = Path(args.results_dir) / "data" / "pipeline_config.json"
-        if config_path.exists():
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                if 'input_files' in config and 'gene_set' in config['input_files']:
-                    gene_set = config['input_files']['gene_set']
-                    # Extract just the filename without path or extension
-                    gene_set_name = Path(gene_set).stem
-    
-    # Create plots
-    plot_enrichment_barplot(
-        results['summary'],
-        output_path,
-        gene_set_name,
-        dpi=args.dpi,
-        format=args.save_format
-    )
-    
-    plot_pvalue_heatmap(
-        results['summary'],
-        output_path,
-        gene_set_name,
-        dpi=args.dpi,
-        format=args.save_format
-    )
-    
-    plot_bootstrap_distributions(
-        results,
-        output_path,
-        gene_set_name,
-        dpi=args.dpi,
-        format=args.save_format
-    )
-    
-    print(f"All plots saved to {output_path}")
 
 if __name__ == "__main__":
     main()

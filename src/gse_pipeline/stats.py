@@ -11,39 +11,67 @@ from statsmodels.stats.multitest import multipletests
 
 def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) -> Dict[str, float]:
     """
-    Calculate enrichment statistics.
+    Calculate enrichment statistics with confidence intervals.
 
     Args:
         target_counts: Array of target counts
         control_counts: Array of control counts
 
     Returns:
-        Dictionary with enrichment statistics
+        Dictionary with enrichment statistics including CI and raw values
     """
     if len(target_counts) == 0 or len(control_counts) == 0:
         raise ValueError("Input arrays cannot be empty")
 
+    # Calculate means and sample size for target and control groups
     target_mean = np.mean(target_counts)
     control_mean = np.mean(control_counts)
+    target_size = len(target_counts)
+    control_size = len(control_counts)
     
+    # Calculate enrichment ratio
     if control_mean == 0:
         enrichment_ratio = np.nan
     else:
         enrichment_ratio = target_mean / control_mean
     
+    # Calculate standard deviations for confidence intervals
+    target_std = np.std(target_counts, ddof=1)  # Use ddof=1 for sample standard deviation
+    control_std = np.std(control_counts, ddof=1)
+    
+    # Calculate 95% confidence intervals for the control mean
+    # Use t-distribution for small samples
+    alpha = 0.05  # 95% confidence interval
+    control_t_val = stats.t.ppf(1 - alpha/2, control_size - 1)
+    control_margin = control_t_val * (control_std / np.sqrt(control_size))
+    control_ci_low = control_mean - control_margin
+    control_ci_high = control_mean + control_margin
+    
+    # If the values are very close, or the standard deviation is near zero,
+    # use a more conservative estimate for the CI
+    if control_std < 1e-10:
+        control_ci_low = control_mean * 0.9
+        control_ci_high = control_mean * 1.1
+    
     # Check if means are nearly identical to avoid precision warnings
-    # Don't try to compare the arrays directly if they have different shapes
     if np.abs(target_mean - control_mean) < 1e-10:
         p_value = 1.0  # If the means are practically identical, there's no significant difference
     else:
         # Use Welch's t-test which doesn't assume equal variances or equal sample sizes
         _, p_value = stats.ttest_ind(target_counts, control_counts, equal_var=False)
     
+    # Store all values needed for the original pipeline format
     return {
         'enrichment_ratio': float(enrichment_ratio),
         'p_value': float(p_value),
-        'target_mean': float(target_mean),
-        'control_mean': float(control_mean)
+        'observed_mean': float(target_mean),
+        'control_mean': float(control_mean),
+        'observed_size': int(target_size),
+        'control_size': int(control_size),
+        'control_ci_low': float(control_ci_low),
+        'control_ci_high': float(control_ci_high),
+        'target_std': float(target_std),
+        'control_std': float(control_std)
     }
 
 def perform_fdr_analysis(p_values: np.ndarray, alpha: float = 0.05) -> Dict[str, np.ndarray]:
