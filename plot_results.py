@@ -104,19 +104,20 @@ def plot_enrichment_barplot(summary, output_path, gene_set_name=None, figsize=(1
     """
     plt.figure(figsize=figsize)
     
-    # Create a custom color palette based on significance
-    colors = summary.apply(
-        lambda x: "#c03a2b" if x["Significant"] else "#7f8c8d",  # Red if significant, gray if not
-        axis=1
-    )
+    # Create a custom color list based on significance
+    colors = ["#c03a2b" if sig else "#7f8c8d" for sig in summary["Significant"]]
     
-    # Create the bar plot
+    # Create the bar plot using the newer seaborn API
     ax = sns.barplot(
         x="Population",
         y="EnrichmentRatio",
         data=summary,
-        palette=colors
+        color="#7f8c8d"  # Default color
     )
+    
+    # Set the bar colors manually
+    for i, patch in enumerate(ax.patches):
+        patch.set_facecolor(colors[i])
     
     # Add a horizontal line at y=1 (no enrichment)
     plt.axhline(y=1, color="black", linestyle="--", alpha=0.7)
