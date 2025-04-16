@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 from typing import Dict, List, Optional, Set, Tuple, Any
 import json
+from functools import partial
 
 import polars as pl
 import numpy as np
@@ -36,6 +37,83 @@ from .stats import (
     calculate_significance
 )
 from .utils import ensure_dir
+
+# Define a helper function for performing permutation outside class (needed for multiprocessing)
+def _perform_permutation(
+    i: int, 
+    gene_coords_df: pl.DataFrame,
+    chrom_sizes: Dict[str, int],
+    target_genes: pl.DataFrame,
+    min_distance: int,
+    factors_df: pl.DataFrame,
+    tolerance: float,
+    processed_genes: pl.DataFrame,
+    gene_set_df: pl.DataFrame,
+    population_names: List[str]
+) -> Dict[str, float]:
+    """
+    Perform a single FDR permutation iteration.
+    
+    Args:
+        i: Iteration number
+        gene_coords_df: Gene coordinates DataFrame
+        chrom_sizes: Dictionary of chromosome sizes
+        target_genes: Target genes DataFrame
+        min_distance: Minimum distance for control genes
+        factors_df: Factors DataFrame
+        tolerance: Tolerance for matching control genes
+        processed_genes: Processed genes DataFrame
+        gene_set_df: Gene set DataFrame
+        population_names: List of population names
+        
+    Returns:
+        Dictionary with enrichment ratios for each population
+    """
+    # Shuffle gene coordinates
+    shuffled_coords = shuffle_genome(gene_coords_df, chrom_sizes)
+    
+    # Compute new gene distances
+    shuffled_distances = compute_gene_distances(shuffled_coords)
+    
+    # Find new control genes
+    shuffled_controls = find_control_genes(
+        target_genes,
+        shuffled_distances,
+        min_distance=min_distance
+    )
+    
+    # Match control genes based on confounding factors
+    shuffled_matched = match_confounding_factors(
+        target_genes,
+        shuffled_controls,
+        factors_df,
+        tolerance=tolerance
+    )
+    
+    # Calculate enrichment for each population
+    iter_results = {}
+    for population in population_names:
+        # Get scores for target and shuffled control genes
+        target_scores = processed_genes.join(
+            gene_set_df,
+            on='gene_id',
+            how='inner'
+        )[population].to_numpy()
+        
+        shuffled_control_scores = processed_genes.join(
+            shuffled_matched.select(['gene_id']),
+            on='gene_id',
+            how='inner'
+        )[population].to_numpy()
+        
+        # Calculate enrichment
+        if len(shuffled_control_scores) > 0:
+            enrichment_ratio = np.mean(target_scores) / np.mean(shuffled_control_scores) if np.mean(shuffled_control_scores) != 0 else float('nan')
+            iter_results[population] = enrichment_ratio
+        else:
+            iter_results[population] = float('nan')
+    
+    return iter_results
 
 class GeneSetEnrichmentPipeline:
     """Main class for running gene set enrichment analysis."""
@@ -240,63 +318,44 @@ class GeneSetEnrichmentPipeline:
             segments = self.config.config.get('fdr', {}).get('shuffling_segments', 1)
             
             # Get chromosome sizes for genome shuffling
+            self.logger.info("Preparing chromosome size data for shuffling")
             chrom_sizes = {}
             for row in self.gene_coords_df.group_by('chrom').agg(
                 pl.max('end').alias('size')
             ).to_dicts():
                 chrom_sizes[row['chrom']] = row['size']
             
-            # Run permutations sequentially
+            # Run permutations in parallel using proper multiprocessing approach
+            num_threads = self.config.num_threads
+            self.logger.info(f"Running {fdr_iterations} permutations with {num_threads} threads")
+            
+            # Create partial function with fixed arguments for multiprocessing
+            permute_func = partial(
+                _perform_permutation,
+                gene_coords_df=self.gene_coords_df,
+                chrom_sizes=chrom_sizes,
+                target_genes=target_genes,
+                min_distance=min_distance,
+                factors_df=self.factors_df,
+                tolerance=tolerance,
+                processed_genes=processed_genes,
+                gene_set_df=self.gene_set_df,
+                population_names=self.population_names
+            )
+            
             permutation_results = []
-            
-            self.logger.info(f"Running {fdr_iterations} permutations")
-            
-            for i in tqdm(range(fdr_iterations), desc="FDR Permutations"):
-                # Shuffle gene coordinates
-                shuffled_coords = shuffle_genome(self.gene_coords_df, chrom_sizes)
-                
-                # Compute new gene distances
-                shuffled_distances = compute_gene_distances(shuffled_coords)
-                
-                # Find new control genes
-                shuffled_controls = find_control_genes(
-                    target_genes,
-                    shuffled_distances,
-                    min_distance=min_distance
-                )
-                
-                # Match control genes based on confounding factors
-                shuffled_matched = match_confounding_factors(
-                    target_genes,
-                    shuffled_controls,
-                    self.factors_df,
-                    tolerance=tolerance
-                )
-                
-                # Calculate enrichment for each population
-                iter_results = {}
-                for population in self.population_names:
-                    # Get scores for target and shuffled control genes
-                    target_scores = processed_genes.join(
-                        self.gene_set_df,
-                        on='gene_id',
-                        how='inner'
-                    )[population].to_numpy()
-                    
-                    shuffled_control_scores = processed_genes.join(
-                        shuffled_matched.select(['gene_id']),
-                        on='gene_id',
-                        how='inner'
-                    )[population].to_numpy()
-                    
-                    # Calculate enrichment
-                    if len(shuffled_control_scores) > 0:
-                        enrichment_ratio = np.mean(target_scores) / np.mean(shuffled_control_scores) if np.mean(shuffled_control_scores) != 0 else float('nan')
-                        iter_results[population] = enrichment_ratio
-                    else:
-                        iter_results[population] = float('nan')
-                
-                permutation_results.append(iter_results)
+            if num_threads > 1:
+                # Use process-based pool for true parallelism
+                with multiprocessing.get_context('spawn').Pool(processes=num_threads) as pool:
+                    # Use imap_unordered for better performance with progress bar
+                    with tqdm(total=fdr_iterations, desc="FDR Permutations") as pbar:
+                        for result in pool.imap_unordered(permute_func, range(fdr_iterations)):
+                            permutation_results.append(result)
+                            pbar.update(1)
+            else:
+                # Fallback to sequential execution if only one thread is requested
+                for i in tqdm(range(fdr_iterations), desc="FDR Permutations"):
+                    permutation_results.append(permute_func(i))
             
             # Calculate empirical p-values
             for population in self.population_names:

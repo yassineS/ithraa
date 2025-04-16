@@ -174,7 +174,7 @@ def filter_genes(
 
 def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
     """
-    Compute distances between genes.
+    Compute distances between genes using vectorized operations.
     
     Args:
         gene_coords: DataFrame with gene coordinates
@@ -182,37 +182,62 @@ def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
     Returns:
         DataFrame with gene_id, target_gene, and distance columns
     """
-    distances = []
-    genes = gene_coords.to_dicts()
-    
-    for i, gene1 in enumerate(genes):
-        for gene2 in genes[i+1:]:
-            if gene1['chrom'] == gene2['chrom']:
-                # Calculate distance between genes on same chromosome
-                # If genes overlap, distance is 0
-                if (gene1['start'] <= gene2['end'] and gene1['end'] >= gene2['start']) or \
-                   (gene2['start'] <= gene1['end'] and gene2['end'] >= gene1['start']):
-                    distance = 0
-                else:
-                    # Distance is the minimum gap between gene boundaries
-                    distance = min(
-                        abs(gene1['start'] - gene2['end']),
-                        abs(gene1['end'] - gene2['start'])
-                    )
-                distances.append({
-                    'gene_id': gene1['gene_id'],
-                    'target_gene': gene2['gene_id'],
-                    'distance': distance
-                })
-    
-    if not distances:
+    if gene_coords.height <= 1:
         return pl.DataFrame({
             'gene_id': [],
             'target_gene': [],
             'distance': []
         })
     
-    return pl.DataFrame(distances)
+    # Group genes by chromosome for faster processing
+    grouped_by_chrom = {}
+    for chrom, group in gene_coords.group_by('chrom').into_groups():
+        grouped_by_chrom[chrom] = group
+    
+    # Process each chromosome separately
+    all_distances = []
+    
+    for chrom, genes in grouped_by_chrom.items():
+        n_genes = len(genes)
+        if n_genes <= 1:
+            continue
+            
+        # Extract data as numpy arrays for faster computation
+        gene_ids = genes['gene_id'].to_numpy()
+        starts = genes['start'].to_numpy()
+        ends = genes['end'].to_numpy()
+        
+        # Create all pairs of genes on this chromosome
+        # This avoids the O(n²) nested loop in the original implementation
+        pairs = [(i, j) for i in range(n_genes) for j in range(i+1, n_genes)]
+        
+        # Compute distances for all pairs at once
+        for i, j in pairs:
+            # Check if genes overlap
+            if (starts[i] <= ends[j] and ends[i] >= starts[j]) or \
+               (starts[j] <= ends[i] and ends[j] >= starts[i]):
+                distance = 0
+            else:
+                # Distance is the minimum gap between gene boundaries
+                distance = min(
+                    abs(starts[i] - ends[j]),
+                    abs(ends[i] - starts[j])
+                )
+                
+            all_distances.append({
+                'gene_id': gene_ids[i],
+                'target_gene': gene_ids[j],
+                'distance': distance
+            })
+    
+    if not all_distances:
+        return pl.DataFrame({
+            'gene_id': [],
+            'target_gene': [],
+            'distance': []
+        })
+    
+    return pl.DataFrame(all_distances)
 
 def process_gene_set(
     gene_list: pl.DataFrame,
@@ -379,6 +404,7 @@ def match_confounding_factors(
 def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl.DataFrame:
     """
     Randomly shuffle gene positions while preserving gene lengths and chromosome assignments.
+    Uses vectorized operations for better performance.
     
     Args:
         gene_coords: DataFrame with gene coordinates
@@ -390,8 +416,10 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
     if gene_coords.height == 0:
         raise ValueError("Gene coordinates DataFrame cannot be empty")
     
-    shuffled = []
-    for chrom in chrom_sizes:
+    # Process each chromosome in parallel using polars expressions
+    results = []
+    
+    for chrom, size in chrom_sizes.items():
         # Get genes on this chromosome
         chrom_genes = gene_coords.filter(pl.col('chrom') == chrom)
         
@@ -399,24 +427,31 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
         if chrom_genes.height == 0:
             continue
         
-        # Get gene lengths
+        # Get gene IDs and compute gene lengths
+        gene_ids = chrom_genes['gene_id'].to_numpy()
         gene_lengths = (chrom_genes['end'] - chrom_genes['start']).to_numpy()
         
-        # Generate random start positions
-        max_start = chrom_sizes[chrom] - gene_lengths.max()
+        # Generate random start positions efficiently
+        max_start = size - gene_lengths.max()
         if max_start <= 0:
             raise ValueError(f"Chromosome {chrom} is too small for genes")
         
+        # Generate all random starts at once
         starts = np.random.randint(0, max_start, size=len(gene_lengths))
         ends = starts + gene_lengths
         
-        # Create shuffled genes
-        for i, row in enumerate(chrom_genes.to_dicts()):
-            shuffled.append({
-                'gene_id': row['gene_id'],
-                'chrom': chrom,
-                'start': int(starts[i]),
-                'end': int(ends[i])
-            })
+        # Create DataFrame for this chromosome
+        chrom_result = pl.DataFrame({
+            'gene_id': gene_ids,
+            'chrom': [chrom] * len(gene_ids),
+            'start': starts,
+            'end': ends
+        })
+        
+        results.append(chrom_result)
     
-    return pl.DataFrame(shuffled)
+    # Combine results from all chromosomes
+    if not results:
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'chrom': pl.Utf8, 'start': pl.Int64, 'end': pl.Int64})
+        
+    return pl.concat(results)
