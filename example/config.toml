@@ -24,19 +24,19 @@ tolerance_range = 0.5
 max_rep = 10
 flip = false
 cluster_distance = 500000
-num_threads = 4  # Number of threads to use for parallel processing
+num_threads = 6 # Number of threads to use for parallel processing
 
 # Bootstrap parameters
 [bootstrap]
 run = true
-iterations = 100
+iterations = 10
 runs = 1
 simultaneous_runs = 25
 
 # FDR parameters
 [fdr]
 run = true
-number = 100
+number = 10
 shuffling_segments = 10
 interrupted = false
 
@@ -53,6 +53,5 @@ groups = ["AFR"]
 #     90, 80, 70, 60, 50, 40, 30, 25, 20, 15, 10
 # ]
 rank_values = [
-    1000, 100,
-    90, 80, 70, 60, 50, 40, 30, 20, 10
+    100, 90, 80, 70, 60, 50, 40, 30, 20, 10
 ]

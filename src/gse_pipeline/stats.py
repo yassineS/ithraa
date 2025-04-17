@@ -3,13 +3,122 @@ Statistical analysis functions for the gene set enrichment pipeline.
 """
 
 from typing import List, Dict, Union, Optional, Tuple
-import numpy as np
+import numba as nb
+import numpy as np  # Use standard numpy for array creation
+from numba.np.unsafe import ndarray as numba_ndarray  # Use only for type annotations
 import polars as pl
 from scipy import stats
 import statsmodels.api as sm
 from statsmodels.stats.multitest import multipletests
 
-def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) -> Dict[str, float]:
+# Core numba-optimized functions for inner loops and heavy calculations
+@nb.njit
+def _bootstrap_samples(data, n_iterations: int, use_mean: bool = True):
+    """
+    Generate bootstrap samples using numba.
+    
+    Args:
+        data: Input data array
+        n_iterations: Number of bootstrap iterations
+        use_mean: Use mean if True, median if False
+        
+    Returns:
+        Array of bootstrap statistics
+    """
+    n = len(data)
+    results = np.zeros(n_iterations)
+    
+    for i in range(n_iterations):
+        # Generate bootstrap sample indices
+        indices = np.random.randint(0, n, size=n)
+        
+        # Calculate statistic
+        sample = data[indices]
+        if use_mean:
+            results[i] = np.mean(sample)
+        else:
+            # For median, we need to sort and find the middle value(s)
+            sample = np.sort(sample)
+            if n % 2 == 0:
+                results[i] = (sample[n//2 - 1] + sample[n//2]) / 2
+            else:
+                results[i] = sample[n//2]
+                
+    return results
+
+@nb.njit
+def _calculate_pairwise_distances(gene_ids, starts, ends):
+    """
+    Calculate pairwise distances between genes.
+    
+    Args:
+        gene_ids: Array of gene IDs
+        starts: Array of gene start positions
+        ends: Array of gene end positions
+        
+    Returns:
+        Tuple of (gene_id1, gene_id2, distances) arrays
+    """
+    n_genes = len(gene_ids)
+    n_pairs = (n_genes * (n_genes - 1)) // 2  # Number of unique pairs
+    
+    # Pre-allocate lists with known size for better memory management
+    gene_id1 = [0] * n_pairs
+    gene_id2 = [0] * n_pairs
+    distances = [0] * n_pairs
+    
+    # Calculate all pairs
+    pair_idx = 0
+    for i in range(n_genes):
+        for j in range(i+1, n_genes):
+            gene_id1[pair_idx] = gene_ids[i]
+            gene_id2[pair_idx] = gene_ids[j]
+            
+            # Check if genes overlap
+            if (starts[i] <= ends[j] and ends[i] >= starts[j]) or \
+               (starts[j] <= ends[i] and ends[j] >= starts[i]):
+                distances[pair_idx] = 0
+            else:
+                # Distance is the minimum gap between gene boundaries
+                distances[pair_idx] = min(
+                    abs(starts[i] - ends[j]),
+                    abs(ends[i] - starts[j])
+                )
+            
+            pair_idx += 1
+            
+    return gene_id1, gene_id2, distances
+
+@nb.njit
+def _mean(arr):
+    """Calculate mean of array using Numba"""
+    if len(arr) == 0:
+        return 0.0
+    return np.sum(arr) / len(arr)
+
+@nb.njit
+def _std(arr, ddof=0):
+    """Calculate standard deviation using Numba"""
+    if len(arr) <= ddof:
+        return 0.0
+    mean = _mean(arr)
+    sq_diff = 0.0
+    for i in range(len(arr)):
+        diff = arr[i] - mean
+        sq_diff += diff * diff
+    return np.sqrt(sq_diff / (len(arr) - ddof))
+
+@nb.njit
+def _abs(x):
+    """Absolute value using Numba"""
+    return -x if x < 0 else x
+
+@nb.njit
+def _sqrt(x):
+    """Square root using Numba"""
+    return x ** 0.5
+
+def calculate_enrichment(target_counts, control_counts) -> Dict[str, float]:
     """
     Calculate enrichment statistics with confidence intervals.
 
@@ -25,37 +134,37 @@ def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) 
         return {
             'enrichment_ratio': float('nan'),
             'p_value': 1.0,
-            'observed_mean': 0.0 if len(target_counts) == 0 else float(np.mean(target_counts)),
-            'control_mean': 0.0 if len(control_counts) == 0 else float(np.mean(control_counts)),
+            'observed_mean': 0.0 if len(target_counts) == 0 else float(_mean(target_counts)),
+            'control_mean': 0.0 if len(control_counts) == 0 else float(_mean(control_counts)),
             'observed_size': len(target_counts),
             'control_size': len(control_counts),
             'control_ci_low': 0.0,
             'control_ci_high': 0.0,
-            'target_std': 0.0 if len(target_counts) == 0 else float(np.std(target_counts, ddof=1)),
-            'control_std': 0.0 if len(control_counts) == 0 else float(np.std(control_counts, ddof=1))
+            'target_std': 0.0 if len(target_counts) == 0 else float(_std(target_counts, ddof=1)),
+            'control_std': 0.0 if len(control_counts) == 0 else float(_std(control_counts, ddof=1))
         }
 
     # Calculate means and sample size for target and control groups
-    target_mean = np.mean(target_counts)
-    control_mean = np.mean(control_counts)
+    target_mean = _mean(target_counts)
+    control_mean = _mean(control_counts)
     target_size = len(target_counts)
     control_size = len(control_counts)
-    
+
     # Calculate enrichment ratio
     if control_mean == 0:
-        enrichment_ratio = np.nan
+        enrichment_ratio = float('nan')
     else:
         enrichment_ratio = target_mean / control_mean
     
     # Calculate standard deviations for confidence intervals
-    target_std = np.std(target_counts, ddof=1)  # Use ddof=1 for sample standard deviation
-    control_std = np.std(control_counts, ddof=1)
+    target_std = _std(target_counts, ddof=1)  # Use ddof=1 for sample standard deviation
+    control_std = _std(control_counts, ddof=1)
     
     # Calculate 95% confidence intervals for the control mean
     # Use t-distribution for small samples
     alpha = 0.05  # 95% confidence interval
     control_t_val = stats.t.ppf(1 - alpha/2, control_size - 1)
-    control_margin = control_t_val * (control_std / np.sqrt(control_size))
+    control_margin = control_t_val * (control_std / _sqrt(control_size))
     control_ci_low = control_mean - control_margin
     control_ci_high = control_mean + control_margin
     
@@ -66,7 +175,7 @@ def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) 
         control_ci_high = control_mean * 1.1
     
     # Check if means are nearly identical to avoid precision warnings
-    if np.abs(target_mean - control_mean) < 1e-10:
+    if _abs(target_mean - control_mean) < 1e-10:
         p_value = 1.0  # If the means are practically identical, there's no significant difference
     else:
         # Use Welch's t-test which doesn't assume equal variances or equal sample sizes
@@ -86,7 +195,7 @@ def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) 
         'control_std': float(control_std)
     }
 
-def perform_fdr_analysis(p_values: np.ndarray, alpha: float = 0.05) -> Dict[str, np.ndarray]:
+def perform_fdr_analysis(p_values, alpha: float = 0.05) -> Dict[str, list]:
     """
     Perform FDR analysis on p-values.
 
@@ -107,12 +216,12 @@ def perform_fdr_analysis(p_values: np.ndarray, alpha: float = 0.05) -> Dict[str,
     )
     
     return {
-        'reject': reject.astype(bool),  # Convert to Python bool
-        'pvals_corrected': pvals_corrected
+        'reject': reject.astype(bool).tolist(),  # Convert to Python bool list
+        'pvals_corrected': pvals_corrected.tolist()
     }
 
 def bootstrap_analysis(
-    data: np.ndarray,
+    data,
     n_iterations: int = 1000,
     statistic: str = 'mean'
 ) -> Dict[str, float]:
@@ -127,8 +236,8 @@ def bootstrap_analysis(
     Returns:
         Dictionary with bootstrap results
     """
+    # Handle empty data gracefully
     if len(data) == 0:
-        # Return default values for empty arrays
         return {
             'mean': 0.0,
             'median': 0.0,
@@ -136,29 +245,26 @@ def bootstrap_analysis(
             'ci_upper': 0.0
         }
 
+    # Use numba-accelerated function for bootstrap sampling
     if statistic == 'mean':
-        stat_func = np.mean
+        boot_stats = _bootstrap_samples(data, n_iterations, use_mean=True)
     elif statistic == 'median':
-        stat_func = np.median
+        boot_stats = _bootstrap_samples(data, n_iterations, use_mean=False)
     else:
         raise ValueError(f"Unknown statistic: {statistic}")
     
-    # Compute statistic on original data
-    orig_stat = stat_func(data)
+    # Compute confidence intervals using percentile method
+    sorted_stats = np.sort(boot_stats)
     
-    # Bootstrap
-    boot_stats = []
-    for _ in range(n_iterations):
-        boot_sample = np.random.choice(data, size=len(data), replace=True)
-        boot_stats.append(stat_func(boot_sample))
-    
-    # Compute confidence intervals
-    ci_lower = np.percentile(boot_stats, 2.5)
-    ci_upper = np.percentile(boot_stats, 97.5)
+    # Calculate percentiles manually
+    lower_idx = int(0.025 * len(sorted_stats))
+    upper_idx = int(0.975 * len(sorted_stats))
+    ci_lower = sorted_stats[lower_idx]
+    ci_upper = sorted_stats[upper_idx]
     
     return {
-        'mean': float(np.mean(boot_stats)),
-        'median': float(np.median(boot_stats)),
+        'mean': float(_mean(boot_stats)),
+        'median': float(sorted_stats[len(sorted_stats) // 2]),
         'ci_lower': float(ci_lower),
         'ci_upper': float(ci_upper)
     }
@@ -167,7 +273,7 @@ def control_for_confounders(
     target_data: pl.DataFrame,
     control_data: pl.DataFrame,
     confounders: List[str]
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, list]:
     """
     Control for confounding factors using regression.
 
@@ -197,10 +303,10 @@ def control_for_confounders(
     results = model.fit()
     
     return {
-        'coefficients': results.params,
-        'p_values': results.pvalues,
-        'aic': results.aic,
-        'bic': results.bic
+        'coefficients': results.params.tolist(),
+        'p_values': results.pvalues.tolist(),
+        'aic': float(results.aic),
+        'bic': float(results.bic)
     }
 
 def compute_enrichment_score(
@@ -227,19 +333,36 @@ def compute_enrichment_score(
     control_mean = float(control_data[score_col].mean())
     enrichment_score = target_mean - control_mean
     
-    # Convert to numpy arrays for comparison and statistical test
+    # Convert to arrays for comparison and statistical test
     target_array = target_data[score_col].to_numpy()
     control_array = control_data[score_col].to_numpy()
     
     # More comprehensive check for nearly identical data to avoid precision warnings
-    if (np.abs(target_mean - control_mean) < 1e-10 or 
-            np.allclose(target_array, control_array, rtol=1e-10, atol=1e-10) or
-            (np.std(target_array) < 1e-10 and np.std(control_array) < 1e-10)):
+    if (_abs(target_mean - control_mean) < 1e-10 or
+            _std(target_array) < 1e-10 and _std(control_array) < 1e-10):
         p_value = 1.0  # If the data is practically identical, there's no significant difference
     else:
         _, p_value = stats.ttest_ind(target_array, control_array, equal_var=False)
     
     return enrichment_score, float(p_value)
+
+@nb.njit
+def _calculate_significance_counts(observed_score: float, null_scores) -> int:
+    """
+    Count how many null scores are greater than or equal to the observed score.
+    
+    Args:
+        observed_score: Observed score
+        null_scores: Array of null distribution scores
+        
+    Returns:
+        Count of scores >= observed
+    """
+    count = 0
+    for i in range(len(null_scores)):
+        if null_scores[i] >= observed_score:
+            count += 1
+    return count
 
 def calculate_significance(
     observed_score: float,
@@ -260,13 +383,14 @@ def calculate_significance(
     if not null_scores:
         raise ValueError("Null scores array cannot be empty")
 
-    # Convert to numpy array
-    null_scores = np.array(null_scores)
+    # Convert to array for Numba processing
+    null_scores_array = np.array(null_scores)
     
-    # Calculate empirical p-value
-    p_value = np.mean(null_scores >= observed_score)
+    # Calculate empirical p-value using numba-accelerated function
+    count_greater_equal = _calculate_significance_counts(observed_score, null_scores_array)
+    p_value = count_greater_equal / len(null_scores_array)
     
-    # Convert numpy.bool_ to Python bool
+    # Return as Python primitives
     is_significant = bool(p_value <= alpha)
     
     return float(p_value), is_significant

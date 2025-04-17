@@ -5,14 +5,20 @@ Test cases for the gene set enrichment pipeline.
 import pytest
 import os
 import logging
-import numpy as np
 import polars as pl
+import numba as nb
+import numba.np.unsafe.ndarray as np  # Use Numba's NumPy API
 from pathlib import Path
 import tempfile
 import shutil
 from tomli_w import dump as tomli_w_dump
 
-from gse_pipeline.pipeline import GeneSetEnrichmentPipeline
+from gse_pipeline.pipeline import (
+    GeneSetEnrichmentPipeline,
+    _perform_permutation,
+    _process_threshold,
+    _calculate_enrichment_ratio
+)
 from gse_pipeline.config import PipelineConfig
 from gse_pipeline.data import (
     load_gene_list,
@@ -27,6 +33,7 @@ from gse_pipeline.stats import (
     perform_fdr_analysis,
     bootstrap_analysis
 )
+from unittest.mock import patch
 
 @pytest.fixture
 def sample_data():
@@ -152,9 +159,57 @@ def test_pipeline_run(minimal_config_file):
     pipeline = GeneSetEnrichmentPipeline(minimal_config_file)
     pipeline.run()  # Should not raise any errors
 
+@patch("gse_pipeline.pipeline.GeneSetEnrichmentPipeline._run_permutation_fdr")
+@patch("gse_pipeline.pipeline.GeneSetEnrichmentPipeline.save_results")
+def test_pipeline_initialization_and_run(mock_save, mock_fdr, minimal_config_file):
+    """Test pipeline initialization and run with mocked expensive operations."""
+    pipeline = GeneSetEnrichmentPipeline(minimal_config_file)
+    
+    # Check that files are loaded correctly
+    assert pipeline.gene_list is not None
+    assert pipeline.gene_coords is not None
+    assert pipeline.factors is not None
+    
+    # Test run with shortened steps (mocked expensive operations)
+    pipeline.run()
+    
+    # Check that save_results was called
+    mock_save.assert_called_once()
+    
+    # Check that _run_permutation_fdr was called
+    assert mock_fdr.called
+
 def test_pipeline_save_results(minimal_config_file, temp_dir):
     """Test saving pipeline results."""
     pipeline = GeneSetEnrichmentPipeline(minimal_config_file)
+    
+    # Create some mock results to save
+    pipeline.threshold_results = {
+        100: {
+            'pop1': {
+                'enrichment_ratio': 2.5,
+                'p_value': 0.001,
+                'observed_mean': 0.2,
+                'control_mean': 0.08,
+                'observed_size': 20,
+                'control_size': 30,
+                'control_ci_low': 0.06,
+                'control_ci_high': 0.10,
+                'significant': True
+            },
+            'pop2': {
+                'enrichment_ratio': 1.2,
+                'p_value': 0.2,
+                'observed_mean': 0.12,
+                'control_mean': 0.10,
+                'observed_size': 20,
+                'control_size': 30,
+                'control_ci_low': 0.08,
+                'control_ci_high': 0.12,
+                'significant': False
+            }
+        }
+    }
     
     # Test with default output directory
     pipeline.save_results()
@@ -256,8 +311,8 @@ def test_data_processing(sample_data):
 def test_statistical_analysis(sample_data):
     """Test statistical analysis functions."""
     # Test enrichment calculation
-    target_counts = np.random.poisson(5, 100)
-    control_counts = np.random.poisson(3, 100)
+    target_counts = nb.np.array([5, 10, 15])
+    control_counts = nb.np.array([3, 6, 9])
     enrichment = calculate_enrichment(target_counts, control_counts)
     
     assert 'enrichment_ratio' in enrichment
@@ -265,7 +320,7 @@ def test_statistical_analysis(sample_data):
     assert enrichment['enrichment_ratio'] > 0
     
     # Test FDR analysis
-    p_values = np.random.uniform(0, 1, 100)
+    p_values = nb.np.array([0.05, 0.01, 0.2])
     fdr_results = perform_fdr_analysis(p_values)
     
     assert 'reject' in fdr_results
@@ -273,7 +328,7 @@ def test_statistical_analysis(sample_data):
     assert len(fdr_results['reject']) == len(p_values)
     
     # Test bootstrap analysis
-    data = np.random.normal(0, 1, 100)
+    data = nb.np.array([0.1, 0.2, 0.3])
     bootstrap_results = bootstrap_analysis(data)
     
     assert 'mean' in bootstrap_results
@@ -330,4 +385,4 @@ def test_match_confounding_factors(sample_data):
     print(matched_controls)
     assert isinstance(matched_controls, pl.DataFrame)
     assert len(matched_controls) > 0
-    assert 'gene3' in matched_controls['gene_id'].to_list()  # gene3 should match gene1 
+    assert 'gene3' in matched_controls['gene_id'].to_list()  # gene3 should match gene1

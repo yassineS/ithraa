@@ -1,23 +1,33 @@
 ### TODO list for the project
 
-- [ ] Documentation
-- [ ] Github pages
-- [ ] Testing vs. perl
-- [ ] Benchmarking vs. perl
-- [ ] Write parquet files.
-- [x] Parallelise FDR.
-- [x] CLI.
-- [ ] Example data.
-- [x] Pytest.
+### FEATURES
+- [ ] Github pages.
 - [ ] Rotate scores within Chromosome.
 - [ ] Mahalanobis distance matching.
-- [ ] Parallelise the "Processing thresholds" steps.
-- [ ] Don't print thresholds to console, but write to log file.
+
+### BUG FIXES and Core Functionality
+- [ ] Documentation.
+- [ ] Example data.
+- [ ] Testing vs. perl.
+- [ ] Check and clean parameters that don't do anything anymore:
+	- [ ] fdr.interrupted.
+	- [ ] fdr.shuffling_segments.
+	- [ ] bootstrap.runs.
+- [x] Fix memory management issues in parallel processing.
+- [x] Improve error handling when thresholds fail to process.
+- [x] Switch to faster libries:
+	- [x] polars.
+	- [x] numba.
+- [x] Parallelise FDR.
+- [x] CLI.
+- [x] Pytest.
+- [x] Parallelise the "Processing thresholds" steps.
+- [x] Fix progress bars.
+	- [x] Don't print thresholds to console, but write to log file.
 - [x] Add timestamp to logfile name.
 - [x] what does "interest" parameter in input do?
-- [x] use "population" parameter to select a subset of populations from the input ranks file.
+- [x] Use "population" parameter to select a subset of populations from the input ranks file.
 - [x] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'.
 - [x] Check and clean if necessary the legacy parameters:
 	- [x] prefix = "all_ihsfreqafr_ranks"
 	- [x] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
-- [ ] Fix progress bars.

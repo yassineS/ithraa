@@ -11,7 +11,8 @@ from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import polars as pl
-import numpy as np
+import numba as nb
+import numpy as np  # Use standard numpy instead of Numba's numpy API
 from tqdm import tqdm
 
 from .config import PipelineConfig
@@ -39,6 +40,26 @@ from .stats import (
 )
 from .utils import ensure_dir
 
+@nb.njit
+def _calculate_enrichment_ratio(target_scores, control_scores) -> float:
+    """
+    Calculate enrichment ratio between target and control scores.
+    
+    Args:
+        target_scores: Array of target scores
+        control_scores: Array of control scores
+        
+    Returns:
+        Enrichment ratio as float
+    """
+    target_mean = np.mean(target_scores)
+    control_mean = np.mean(control_scores)
+    
+    if abs(control_mean) < 1e-10:
+        return float('nan')
+        
+    return target_mean / control_mean
+
 # Define a helper function for performing permutation outside class (needed for multiprocessing)
 def _perform_permutation(
     i: int, 
@@ -54,6 +75,7 @@ def _perform_permutation(
 ) -> Dict[str, float]:
     """
     Perform a single FDR permutation iteration.
+    Uses Numba-accelerated functions for critical computations.
     
     Args:
         i: Iteration number
@@ -107,10 +129,10 @@ def _perform_permutation(
             how='inner'
         )[population].to_numpy()
         
-        # Calculate enrichment
+        # Calculate enrichment using Numba-accelerated function
         if len(shuffled_control_scores) > 0:
-            enrichment_ratio = np.mean(target_scores) / np.mean(shuffled_control_scores) if np.mean(shuffled_control_scores) != 0 else float('nan')
-            iter_results[population] = enrichment_ratio
+            enrichment_ratio = _calculate_enrichment_ratio(target_scores, shuffled_control_scores)
+            iter_results[population] = float(enrichment_ratio)
         else:
             iter_results[population] = float('nan')
     
@@ -407,6 +429,7 @@ class GeneSetEnrichmentPipeline:
                     # Process results as they complete with progress bar
                     completed = 0
                     total = len(futures)
+                    failed_thresholds = []
                     
                     with tqdm(total=total, desc="Processing thresholds", unit="threshold", 
                             position=0, leave=True, ncols=100) as pbar:
@@ -429,37 +452,63 @@ class GeneSetEnrichmentPipeline:
                                         f"  {population}: ratio={result[threshold_key][population]['enrichment_ratio']:.4f}, "
                                         f"p={result[threshold_key][population]['p_value']:.4e}, significant={significant}"
                                     )
-                                
-                                # Update progress bar
+                            except Exception as e:
+                                self.logger.error(f"Error processing threshold {threshold}: {str(e)}")
+                                # Track failed thresholds but continue processing others
+                                failed_thresholds.append(threshold)
+                            finally:
+                                # Update progress bar regardless of success or failure
                                 completed += 1
                                 pbar.n = completed  # Force update counter
                                 pbar.refresh()      # Force refresh display
-                                
-                            except Exception as e:
-                                self.logger.error(f"Error processing threshold {threshold}: {str(e)}")
-                                raise
                     
-                    self.logger.info(f"Completed {completed}/{total} threshold analyses")
+                    # Report on overall completion status
+                    if failed_thresholds:
+                        self.logger.warning(f"Failed to process {len(failed_thresholds)} thresholds: {', '.join(map(str, failed_thresholds))}")
+                        if len(failed_thresholds) == len(rank_thresholds):
+                            # All thresholds failed, raise an error
+                            raise RuntimeError("All thresholds failed to process. Check the logs for details.")
+                    
+                    self.logger.info(f"Completed {completed - len(failed_thresholds)}/{total} threshold analyses successfully")
+                    
+                    # Try to process failed thresholds sequentially if any failed
+                    if failed_thresholds and len(failed_thresholds) < len(rank_thresholds):
+                        self.logger.info(f"Attempting to process {len(failed_thresholds)} failed thresholds sequentially")
+                        self._run_sequential(processed_genes, failed_thresholds, threshold_results, 
+                                           min_distance, tolerance, run_bootstrap, 
+                                           bootstrap_iterations, bootstrap_runs)
             except Exception as e:
                 self.logger.error(f"Error in parallel processing: {str(e)}")
-                # Fall back to sequential processing if parallel fails
-                self.logger.info("Falling back to sequential processing")
-                self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
-                                   min_distance, tolerance, run_bootstrap, 
-                                   bootstrap_iterations, bootstrap_runs)
+                # If we have some results already, continue with what we have
+                if threshold_results:
+                    self.logger.warning(f"Proceeding with {len(threshold_results)} successfully processed thresholds")
+                else:
+                    # Fall back to sequential processing if parallel completely fails and we have no results
+                    self.logger.info("Falling back to sequential processing")
+                    self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
+                                       min_distance, tolerance, run_bootstrap, 
+                                       bootstrap_iterations, bootstrap_runs)
         else:
             # Fall back to sequential processing if only one thread is requested
             self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
                                min_distance, tolerance, run_bootstrap,
                                bootstrap_iterations, bootstrap_runs)
         
+        # Check if we have any results
+        if not threshold_results:
+            raise RuntimeError("Pipeline failed to process any thresholds. Check the logs for details.")
+        
         # Step 9: Optional - Perform FDR analysis with permutations for the top threshold only
         # This is computationally intensive, so we'll do it only for the highest threshold
         if self.config.config.get('fdr', {}).get('run', True):
-            top_threshold = rank_thresholds[0]
-            self.logger.info(f"Performing permutation-based FDR analysis for threshold {top_threshold}")
-            
-            self._run_permutation_fdr(processed_genes, top_threshold, threshold_results[top_threshold])
+            # Use the highest threshold that was successfully processed
+            available_thresholds = sorted(threshold_results.keys(), reverse=True)
+            if available_thresholds:
+                top_threshold = available_thresholds[0]
+                self.logger.info(f"Performing permutation-based FDR analysis for threshold {top_threshold}")
+                self._run_permutation_fdr(processed_genes, top_threshold, threshold_results[top_threshold])
+            else:
+                self.logger.warning("Cannot run FDR analysis: No successfully processed thresholds")
         
         # Step 10: Save results
         self.logger.info("Saving results")
@@ -469,7 +518,7 @@ class GeneSetEnrichmentPipeline:
         # Log completion time
         elapsed_time = time.time() - start_time
         self.logger.info(f"Pipeline completed in {elapsed_time:.2f} seconds")
-        
+
     def _run_sequential(self, processed_genes, rank_thresholds, threshold_results,
                         min_distance, tolerance, run_bootstrap, bootstrap_iterations, bootstrap_runs):
         """Run threshold processing sequentially.

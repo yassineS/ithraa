@@ -9,7 +9,8 @@ import sys
 import argparse
 import glob
 from pathlib import Path
-import numpy as np
+import numba as nb
+import numba.np.unsafe.ndarray as np  # Use Numba's NumPy API
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -221,7 +222,13 @@ def plot_population_enrichment(results_df, output_path, gene_set=None, figsize=(
     
     # Create a figure with subplots
     fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharey=True)
-    axes = np.array(axes).flatten()  # Convert to 1D array for easy indexing
+    
+    # Handle case when there is only one population (resulting in a single subplot)
+    if n_pops == 1:
+        axes = [axes]
+    else:
+        # Convert to 1D array for easy indexing
+        axes = axes.flatten() if hasattr(axes, 'flatten') else [axes]
     
     # Sort by threshold (ascending order for plotting)
     results_df = results_df.sort_values('Threshold')

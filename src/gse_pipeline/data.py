@@ -4,9 +4,13 @@ Utility functions for data processing in the gene set enrichment pipeline.
 
 from typing import Dict, List, Optional, Set, Tuple, Union
 import polars as pl
-import numpy as np
+import numba as nb
+import numpy as np  # Use standard NumPy instead of Numba's NumPy API
 from pathlib import Path
 import logging
+
+# Import the optimized pairwise distance calculator from stats.py
+from .stats import _calculate_pairwise_distances
 
 def load_gene_list(
     file_path: Path, 
@@ -208,7 +212,7 @@ def filter_genes(
 
 def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
     """
-    Compute distances between genes using vectorized operations.
+    Compute distances between genes using Numba-accelerated parallel processing.
     
     Args:
         gene_coords: DataFrame with gene coordinates
@@ -236,32 +240,25 @@ def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
         if n_genes <= 1:
             continue
             
-        # Extract data as numpy arrays for faster computation
+        # Extract data as arrays for faster computation
         gene_ids = genes['gene_id'].to_numpy()
         starts = genes['start'].to_numpy()
         ends = genes['end'].to_numpy()
         
-        # Create all pairs of genes on this chromosome
-        # This avoids the O(n²) nested loop in the original implementation
-        pairs = [(i, j) for i in range(n_genes) for j in range(i+1, n_genes)]
+        # Use the numba-optimized function for calculating pairwise distances
+        # The function returns lists rather than NumPy arrays
+        idx1, idx2, distances = _calculate_pairwise_distances(
+            np.arange(n_genes, dtype=np.int64), 
+            starts, 
+            ends
+        )
         
-        # Compute distances for all pairs at once
-        for i, j in pairs:
-            # Check if genes overlap
-            if (starts[i] <= ends[j] and ends[i] >= starts[j]) or \
-               (starts[j] <= ends[i] and ends[j] >= starts[i]):
-                distance = 0
-            else:
-                # Distance is the minimum gap between gene boundaries
-                distance = min(
-                    abs(starts[i] - ends[j]),
-                    abs(ends[i] - starts[j])
-                )
-                
+        # Map indices back to gene IDs
+        for i in range(len(idx1)):
             all_distances.append({
-                'gene_id': gene_ids[i],
-                'target_gene': gene_ids[j],
-                'distance': distance
+                'gene_id': gene_ids[int(idx1[i])],
+                'target_gene': gene_ids[int(idx2[i])],
+                'distance': int(distances[i])
             })
     
     if not all_distances:
@@ -365,6 +362,54 @@ def find_control_genes(
     
     return pl.DataFrame({'gene_id': list(control_genes)})
 
+@nb.njit(parallel=True)
+def _find_matching_factors(
+    target_values, 
+    control_values,
+    tolerance: float
+):
+    """
+    Find control genes that match target genes based on confounding factors.
+    Uses parallelized operations for better performance.
+    
+    Args:
+        target_values: 2D array where each row is the factor values for a target gene
+        control_values: 2D array where each row is the factor values for a control gene
+        tolerance: Maximum allowed relative difference
+        
+    Returns:
+        Array of indices of matching control genes for each target gene
+    """
+    n_targets = target_values.shape[0]
+    n_controls = control_values.shape[0]
+    n_factors = target_values.shape[1]
+    matches = np.zeros((n_targets, n_controls), dtype=np.bool_)
+    
+    # Initialize all matches to True
+    for i in range(n_targets):
+        for j in range(n_controls):
+            matches[i, j] = True
+    
+    # Check each factor for matches
+    for i in nb.prange(n_targets):
+        for j in range(n_controls):
+            for k in range(n_factors):
+                target_val = target_values[i, k]
+                control_val = control_values[j, k]
+                
+                # Calculate relative difference
+                if abs(target_val) > 1e-10:
+                    relative_diff = abs(target_val - control_val) / abs(target_val)
+                else:
+                    relative_diff = abs(control_val) > 1e-10
+                
+                # If any factor is outside tolerance, this is not a match
+                if relative_diff > tolerance:
+                    matches[i, j] = False
+                    break
+    
+    return matches
+
 def match_confounding_factors(
     target_genes: pl.DataFrame,
     control_genes: pl.DataFrame,
@@ -373,6 +418,7 @@ def match_confounding_factors(
 ) -> pl.DataFrame:
     """
     Match control genes to target genes based on confounding factors.
+    Uses Numba-accelerated functions for better performance.
     
     Args:
         target_genes: DataFrame with target gene IDs
@@ -402,32 +448,35 @@ def match_confounding_factors(
     # Get factor columns (excluding gene_id)
     factor_cols = [col for col in factors.columns if col != 'gene_id']
     
-    # Find matches within tolerance
+    if not factor_cols:
+        # No factors to match, return all control genes
+        return control_genes
+    
+    # Convert to numpy arrays for numba processing
+    target_values = target_factors.select(factor_cols).to_numpy()
+    control_values = control_factors.select(factor_cols).to_numpy()
+    control_ids = control_factors['gene_id'].to_numpy()
+    
+    if len(target_values) == 0 or len(control_values) == 0:
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, **{col: pl.Float64 for col in factor_cols}})
+    
+    # Find matches using numba-accelerated function
+    matches = _find_matching_factors(target_values, control_values, tolerance)
+    
+    # Collect control genes that match any target gene
+    matched_indices = set()
+    for i in range(matches.shape[0]):
+        for j in range(matches.shape[1]):
+            if matches[i, j]:
+                matched_indices.add(j)
+    
+    # Convert to list for DataFrame creation
     matched_genes = []
-    for target in target_factors.to_dicts():
-        for control in control_factors.to_dicts():
-            # Check if all factors are within relative tolerance
-            matches = True
-            for col in factor_cols:
-                target_val = float(target[col])
-                control_val = float(control[col])
-                
-                # Use relative difference for comparison
-                if target_val != 0:
-                    relative_diff = abs(target_val - control_val) / abs(target_val)
-                else:
-                    # Handle zero values specially
-                    relative_diff = abs(control_val) > 1e-10
-                
-                if relative_diff > tolerance:
-                    matches = False
-                    break
-            
-            if matches:
-                matched_genes.append({
-                    'gene_id': control['gene_id'],
-                    **{col: float(control[col]) for col in factor_cols}
-                })
+    for idx in matched_indices:
+        matched_genes.append({
+            'gene_id': control_ids[idx],
+            **{col: float(control_values[idx, i]) for i, col in enumerate(factor_cols)}
+        })
     
     # Create DataFrame with matched genes and their factor values
     if not matched_genes:
@@ -435,10 +484,44 @@ def match_confounding_factors(
     
     return pl.DataFrame(matched_genes)
 
+@nb.njit(parallel=True)
+def _shuffle_gene_positions(gene_lengths, chrom_size: int) -> Tuple[nb.types.Array, nb.types.Array]:
+    """
+    Generate shuffled gene positions in parallel.
+    
+    Args:
+        gene_lengths: Array of gene lengths
+        chrom_size: Size of chromosome
+        
+    Returns:
+        Tuple of (starts, ends) arrays
+    """
+    n_genes = len(gene_lengths)
+    starts = np.zeros(n_genes, dtype=np.int64)
+    ends = np.zeros(n_genes, dtype=np.int64)
+    
+    # Find maximum gene length to determine valid start positions
+    max_length = 0
+    for i in range(n_genes):
+        if gene_lengths[i] > max_length:
+            max_length = gene_lengths[i]
+    
+    max_start = chrom_size - max_length
+    if max_start <= 0:
+        # Return zeros if chromosome is too small
+        return starts, ends
+    
+    # Generate random positions in parallel
+    for i in nb.prange(n_genes):
+        starts[i] = np.random.randint(0, max_start)
+        ends[i] = starts[i] + gene_lengths[i]
+        
+    return starts, ends
+
 def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl.DataFrame:
     """
     Randomly shuffle gene positions while preserving gene lengths and chromosome assignments.
-    Uses vectorized operations for better performance.
+    Uses Numba-accelerated parallel processing for better performance.
     
     Args:
         gene_coords: DataFrame with gene coordinates
@@ -450,7 +533,7 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
     if gene_coords.height == 0:
         raise ValueError("Gene coordinates DataFrame cannot be empty")
     
-    # Process each chromosome in parallel using polars expressions
+    # Process each chromosome using Numba acceleration
     results = []
     
     for chrom, size in chrom_sizes.items():
@@ -465,14 +548,8 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
         gene_ids = chrom_genes['gene_id'].to_numpy()
         gene_lengths = (chrom_genes['end'] - chrom_genes['start']).to_numpy()
         
-        # Generate random start positions efficiently
-        max_start = size - gene_lengths.max()
-        if max_start <= 0:
-            raise ValueError(f"Chromosome {chrom} is too small for genes")
-        
-        # Generate all random starts at once
-        starts = np.random.randint(0, max_start, size=len(gene_lengths))
-        ends = starts + gene_lengths
+        # Use Numba-accelerated function for shuffling
+        starts, ends = _shuffle_gene_positions(gene_lengths, size)
         
         # Create DataFrame for this chromosome
         chrom_result = pl.DataFrame({
