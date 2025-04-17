@@ -377,61 +377,120 @@ class GeneSetEnrichmentPipeline:
         
         # Use ProcessPoolExecutor for better exception handling than multiprocessing.Pool
         if num_threads > 1:
-            # Process thresholds in parallel using ProcessPoolExecutor
-            with ProcessPoolExecutor(max_workers=num_threads) as executor:
-                # Prepare the tasks with a partial function 
-                process_func = partial(
-                    _process_threshold,
-                    processed_genes=processed_genes,
-                    gene_set_df=self.gene_set_df,
-                    gene_coords_df=self.gene_coords_df,
-                    factors_df=self.factors_df,
-                    population_names=self.population_names,
-                    min_distance=min_distance,
-                    tolerance=tolerance,
-                    run_bootstrap=run_bootstrap,
-                    bootstrap_iterations=bootstrap_iterations,
-                    bootstrap_runs=bootstrap_runs,
-                    log_prefix="[Parallel] "
-                )
-                
-                # Submit all tasks
-                future_to_threshold = {
-                    executor.submit(process_func, threshold): threshold 
-                    for threshold in rank_thresholds
-                }
-                
-                # Process results as they complete with progress bar
-                with tqdm(total=len(rank_thresholds), desc="Processing thresholds", unit="threshold") as pbar:
-                    for future in as_completed(future_to_threshold):
-                        threshold = future_to_threshold[future]
-                        try:
-                            # Get the result from this threshold
-                            result = future.result()
-                            # Update the master results dictionary
-                            threshold_results.update(result)
-                            
-                            # Log a summary for this threshold (goes to file only)
-                            threshold_key = list(result.keys())[0]  # Get the threshold from the result
-                            self.logger.debug(f"Completed threshold {threshold_key} analysis")
-                            
-                            # Show more concise output in console log
-                            for population in self.population_names:
-                                significant = "✓" if result[threshold_key][population].get('significant', False) else "✗"
-                                self.logger.debug(
-                                    f"  {population}: ratio={result[threshold_key][population]['enrichment_ratio']:.4f}, "
-                                    f"p={result[threshold_key][population]['p_value']:.4e}, significant={significant}"
-                                )
-                        except Exception as e:
-                            self.logger.error(f"Error processing threshold {threshold}: {str(e)}")
-                            raise
-                        
-                        # Update progress bar
-                        pbar.update(1)
+            try:
+                # Process thresholds in parallel using ProcessPoolExecutor
+                with ProcessPoolExecutor(max_workers=num_threads) as executor:
+                    # Prepare the tasks with a partial function 
+                    process_func = partial(
+                        _process_threshold,
+                        processed_genes=processed_genes,
+                        gene_set_df=self.gene_set_df,
+                        gene_coords_df=self.gene_coords_df,
+                        factors_df=self.factors_df,
+                        population_names=self.population_names,
+                        min_distance=min_distance,
+                        tolerance=tolerance,
+                        run_bootstrap=run_bootstrap,
+                        bootstrap_iterations=bootstrap_iterations,
+                        bootstrap_runs=bootstrap_runs,
+                        log_prefix="[Parallel] "
+                    )
+                    
+                    # Submit all tasks and collect futures
+                    futures = {
+                        executor.submit(process_func, threshold): threshold 
+                        for threshold in rank_thresholds
+                    }
+                    
+                    # Process results as they complete with progress bar
+                    completed = 0
+                    total = len(futures)
+                    
+                    with tqdm(total=total, desc="Processing thresholds", unit="threshold", 
+                            position=0, leave=True, ncols=100) as pbar:
+                        for future in as_completed(futures):
+                            threshold = futures[future]
+                            try:
+                                # Get the result from this threshold
+                                result = future.result()
+                                # Update the master results dictionary
+                                threshold_results.update(result)
+                                
+                                # Log a summary for this threshold
+                                threshold_key = list(result.keys())[0]  # Get the threshold from the result
+                                self.logger.debug(f"Completed threshold {threshold_key} analysis")
+                                
+                                # Show concise output in console log
+                                for population in self.population_names:
+                                    significant = "✓" if result[threshold_key][population].get('significant', False) else "✗"
+                                    self.logger.debug(
+                                        f"  {population}: ratio={result[threshold_key][population]['enrichment_ratio']:.4f}, "
+                                        f"p={result[threshold_key][population]['p_value']:.4e}, significant={significant}"
+                                    )
+                                
+                                # Update progress bar
+                                completed += 1
+                                pbar.n = completed  # Force update counter
+                                pbar.refresh()      # Force refresh display
+                                
+                            except Exception as e:
+                                self.logger.error(f"Error processing threshold {threshold}: {str(e)}")
+                                raise
+                    
+                    self.logger.info(f"Completed {completed}/{total} threshold analyses")
+            except Exception as e:
+                self.logger.error(f"Error in parallel processing: {str(e)}")
+                # Fall back to sequential processing if parallel fails
+                self.logger.info("Falling back to sequential processing")
+                self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
+                                   min_distance, tolerance, run_bootstrap, 
+                                   bootstrap_iterations, bootstrap_runs)
         else:
             # Fall back to sequential processing if only one thread is requested
-            with tqdm(total=len(rank_thresholds), desc="Processing thresholds", unit="threshold") as pbar:
-                for threshold in rank_thresholds:
+            self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
+                               min_distance, tolerance, run_bootstrap,
+                               bootstrap_iterations, bootstrap_runs)
+        
+        # Step 9: Optional - Perform FDR analysis with permutations for the top threshold only
+        # This is computationally intensive, so we'll do it only for the highest threshold
+        if self.config.config.get('fdr', {}).get('run', True):
+            top_threshold = rank_thresholds[0]
+            self.logger.info(f"Performing permutation-based FDR analysis for threshold {top_threshold}")
+            
+            self._run_permutation_fdr(processed_genes, top_threshold, threshold_results[top_threshold])
+        
+        # Step 10: Save results
+        self.logger.info("Saving results")
+        self.threshold_results = threshold_results
+        self.save_results()
+        
+        # Log completion time
+        elapsed_time = time.time() - start_time
+        self.logger.info(f"Pipeline completed in {elapsed_time:.2f} seconds")
+        
+    def _run_sequential(self, processed_genes, rank_thresholds, threshold_results,
+                        min_distance, tolerance, run_bootstrap, bootstrap_iterations, bootstrap_runs):
+        """Run threshold processing sequentially.
+        
+        This is a fallback method when parallel processing is not available or fails.
+        
+        Args:
+            processed_genes: DataFrame of processed genes
+            rank_thresholds: List of rank thresholds to process
+            threshold_results: Dictionary to store results
+            min_distance: Minimum distance for control genes
+            tolerance: Tolerance for matching control genes
+            run_bootstrap: Whether to run bootstrap analysis
+            bootstrap_iterations: Number of bootstrap iterations
+            bootstrap_runs: Number of bootstrap runs
+        """
+        self.logger.info("Running threshold processing sequentially")
+        
+        # Process each threshold sequentially with a progress bar
+        with tqdm(total=len(rank_thresholds), desc="Processing thresholds", unit="threshold",
+                position=0, leave=True, ncols=100) as pbar:
+            for threshold in rank_thresholds:
+                try:
                     # Process this threshold
                     result = _process_threshold(
                         threshold=threshold,
@@ -450,7 +509,7 @@ class GeneSetEnrichmentPipeline:
                     # Update the master results dictionary
                     threshold_results.update(result)
                     
-                    # Log a summary of the results for this threshold (debug level - file only)
+                    # Log a summary of the results for this threshold
                     threshold_key = list(result.keys())[0]
                     self.logger.debug(f"Completed threshold {threshold_key} analysis")
                     for population in self.population_names:
@@ -462,23 +521,11 @@ class GeneSetEnrichmentPipeline:
                     
                     # Update progress bar
                     pbar.update(1)
-        
-        # Step 9: Optional - Perform FDR analysis with permutations for the top threshold only
-        # This is computationally intensive, so we'll do it only for the highest threshold
-        if self.config.config.get('fdr', {}).get('run', True):
-            top_threshold = rank_thresholds[0]
-            self.logger.info(f"Performing permutation-based FDR analysis for threshold {top_threshold}")
-            
-            self._run_permutation_fdr(processed_genes, top_threshold, threshold_results[top_threshold])
-        
-        # Step 10: Save results
-        self.logger.info("Saving results")
-        self.threshold_results = threshold_results
-        self.save_results()
-        
-        # Log completion time
-        elapsed_time = time.time() - start_time
-        self.logger.info(f"Pipeline completed in {elapsed_time:.2f} seconds")
+                    pbar.refresh()
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing threshold {threshold}: {str(e)}")
+                    raise
         
     def _run_permutation_fdr(self, processed_genes, threshold, results_dict):
         """
@@ -534,14 +581,19 @@ class GeneSetEnrichmentPipeline:
             # Use process-based pool for true parallelism
             with multiprocessing.get_context('spawn').Pool(processes=num_threads) as pool:
                 # Use imap_unordered for better performance with progress bar
-                with tqdm(total=fdr_iterations, desc="FDR Permutations") as pbar:
-                    for result in pool.imap_unordered(permute_func, range(fdr_iterations)):
+                with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", position=0, leave=True, ncols=100, smoothing=0.1) as pbar:
+                    for i, result in enumerate(pool.imap_unordered(permute_func, range(fdr_iterations))):
                         permutation_results.append(result)
                         pbar.update(1)
+                        pbar.refresh()
         else:
             # Fallback to sequential execution if only one thread is requested
-            for i in tqdm(range(fdr_iterations), desc="FDR Permutations"):
-                permutation_results.append(permute_func(i))
+            with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", position=0, leave=True, ncols=100, smoothing=0.1) as pbar:
+                for i in range(fdr_iterations):
+                    result = permute_func(i)
+                    permutation_results.append(result)
+                    pbar.update(1)
+                    pbar.refresh()
         
         # Calculate empirical p-values
         for population in self.population_names:

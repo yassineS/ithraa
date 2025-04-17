@@ -20,8 +20,20 @@ def calculate_enrichment(target_counts: np.ndarray, control_counts: np.ndarray) 
     Returns:
         Dictionary with enrichment statistics including CI and raw values
     """
+    # Handle empty arrays gracefully
     if len(target_counts) == 0 or len(control_counts) == 0:
-        raise ValueError("Input arrays cannot be empty")
+        return {
+            'enrichment_ratio': float('nan'),
+            'p_value': 1.0,
+            'observed_mean': 0.0 if len(target_counts) == 0 else float(np.mean(target_counts)),
+            'control_mean': 0.0 if len(control_counts) == 0 else float(np.mean(control_counts)),
+            'observed_size': len(target_counts),
+            'control_size': len(control_counts),
+            'control_ci_low': 0.0,
+            'control_ci_high': 0.0,
+            'target_std': 0.0 if len(target_counts) == 0 else float(np.std(target_counts, ddof=1)),
+            'control_std': 0.0 if len(control_counts) == 0 else float(np.std(control_counts, ddof=1))
+        }
 
     # Calculate means and sample size for target and control groups
     target_mean = np.mean(target_counts)
@@ -116,7 +128,13 @@ def bootstrap_analysis(
         Dictionary with bootstrap results
     """
     if len(data) == 0:
-        raise ValueError("Input data array cannot be empty")
+        # Return default values for empty arrays
+        return {
+            'mean': 0.0,
+            'median': 0.0,
+            'ci_lower': 0.0,
+            'ci_upper': 0.0
+        }
 
     if statistic == 'mean':
         stat_func = np.mean

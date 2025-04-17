@@ -53,7 +53,12 @@ def load_gene_list(
             invalid_pops = ', '.join(selected_pops)
             logging.warning(f"None of the requested populations '{invalid_pops}' were found in data. "
                           f"Available populations: {', '.join(all_population_names)}")
-            population_names = all_population_names
+            
+            # Instead of continuing with all populations, use the first available population
+            # This is safer than proceeding with an empty list
+            population_names = [all_population_names[0]]
+            df = df.select(['gene_id'] + population_names)
+            logging.info(f"Using population {population_names[0]} for analysis instead")
     else:
         population_names = all_population_names
     

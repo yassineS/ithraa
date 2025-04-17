@@ -43,7 +43,7 @@ interrupted = false
 # Population parameters
 [population]
 population = "YRI"
-groups = ["AFR", "AFR", "AFR", "AFR", "AFR"]
+groups = ["AFR"]
 
 # Threshold parameters
 [thresholds]
