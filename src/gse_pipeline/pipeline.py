@@ -368,10 +368,12 @@ class GeneSetEnrichmentPipeline:
         min_distance = self.config.analysis_params.get('min_distance', 1000000)  # 1 Mb default
         tolerance = self.config.analysis_params.get('tolerance_range', 0.1)  # 10% default
         
-        # Determine number of processes to use for threshold parallelization
-        # Use half the available threads for threshold processing to avoid oversubscription
-        # since each threshold process might internally use multiple threads
-        num_threads = max(1, min(len(rank_thresholds), self.config.num_threads))
+        # Use the number of threads specified in the config
+        # Don't automatically calculate based on system cores
+        num_threads = self.config.num_threads
+        
+        # Make sure the thread count is at least 1 and doesn't exceed the number of thresholds
+        num_threads = max(1, min(len(rank_thresholds), num_threads))
         
         self.logger.info(f"Processing {len(rank_thresholds)} thresholds using {num_threads} parallel workers")
         

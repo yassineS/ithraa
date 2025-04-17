@@ -36,7 +36,7 @@ simultaneous_runs = 25
 # FDR parameters
 [fdr]
 run = true
-number = 1000
+number = 100
 shuffling_segments = 10
 interrupted = false
 

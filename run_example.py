@@ -1,14 +1,38 @@
 import logging
 import os
 import multiprocessing
+import time
 from pathlib import Path
 from gse_pipeline import GeneSetEnrichmentPipeline
 from gse_pipeline.config import PipelineConfig
 
 def run_pipeline():
-    # Configure logging
-    logging.basicConfig(level=logging.DEBUG, 
-                        format='%(asctime)s - %(levelname)s - %(message)s')
+    # Configure logging to file only for debug messages, console for info and above
+    # This keeps the progress bar clean by not printing debug messages to console
+    log_dir = Path("results/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_dir / f"pipeline_{time.strftime('%Y%m%d-%H%M%S')}.log")
+    file_handler.setLevel(logging.DEBUG)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)  # Only INFO and above go to console
+    
+    # Format for both handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Get the root logger and configure it
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Capture all messages at the root
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        
+    # Add the handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
 
     # Print current working directory for debugging
     print(f"Current working directory: {os.getcwd()}")
