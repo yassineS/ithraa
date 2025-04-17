@@ -3,46 +3,44 @@
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import time
 
-def setup_logging(log_dir: Path, level: int = logging.INFO) -> None:
+def setup_logging(log_dir=None, level=logging.INFO):
     """Set up logging configuration.
-
+    
     Args:
         log_dir: Directory to store log files
-        level: Logging level (default: INFO)
+        level: Logging level
     """
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Create log directory if specified and doesn't exist
+    if log_dir:
+        log_dir = Path(log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / 'pipeline.log'
+        
+        # Create a file handler to write logs to file
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        
+        # Ensure the file is created immediately by writing an initial log message
+        root_logger = logging.getLogger()
+        root_logger.setLevel(level)
+        root_logger.addHandler(file_handler)
+        root_logger.info("Logging initialized")
     
-    # Add timestamp to logfile name
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    log_file = log_dir / f'pipeline_{timestamp}.log'
-
-    # Clear any existing handlers
-    root_logger = logging.getLogger()
-    if root_logger.handlers:
-        for handler in root_logger.handlers:
-            root_logger.removeHandler(handler)
-
-    # Configure the root logger
-    root_logger.setLevel(logging.DEBUG)  # Capture all possible logs
-
-    # Create file handler with detailed formatting (maintains full verbosity)
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)  # Store everything in the log file
-    file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(file_format)
-    
-    # Create console handler with minimal formatting
-    # Default to warnings and errors only unless --verbose is passed
+    # Always add a console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)  # This will be controlled by --verbose flag
-    console_format = logging.Formatter('%(message)s')  # Simplified format for console
-    console_handler.setFormatter(console_format)
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    ))
     
-    # Add handlers to logger
-    root_logger.addHandler(file_handler)
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
     root_logger.addHandler(console_handler)
+    
+    return logging.getLogger('gse_pipeline')
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary.
