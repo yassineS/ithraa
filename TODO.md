@@ -20,3 +20,4 @@
 - [x] Check and clean if necessary the legacy parameters:
 	- [x] prefix = "all_ihsfreqafr_ranks"
 	- [x] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
+- [ ] Fix progress bars.
