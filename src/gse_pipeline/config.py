@@ -43,9 +43,8 @@ class PipelineConfig:
         # Extract gene prefixes to exclude
         self.exclude_prefixes = set(self.config.get("exclude_prefixes", []))
         
-        # Extract number of threads
-        self.num_threads = self.config.get("num_threads", 
-                                        os.cpu_count() if os.cpu_count() else 4)
+        # Extract number of threads from analysis section, default to 1 if not specified
+        self.num_threads = self.analysis_params.get("num_threads", 1)
                                         
         # Extract population settings
         self.population_config = self.config.get("population", {})
