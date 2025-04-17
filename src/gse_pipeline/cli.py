@@ -112,11 +112,6 @@ def parse_args():
         help="Override number of bootstrap iterations"
     )
     bootstrap_group.add_argument(
-        "--bootstrap-runs",
-        type=int,
-        help="Override number of bootstrap runs"
-    )
-    bootstrap_group.add_argument(
         "--simultaneous-runs",
         type=int,
         help="Override number of simultaneous runs"
@@ -133,16 +128,6 @@ def parse_args():
         "--fdr-iterations",
         type=int,
         help="Override number of FDR iterations"
-    )
-    fdr_group.add_argument(
-        "--shuffling-segments",
-        type=int,
-        help="Override number of shuffling segments"
-    )
-    fdr_group.add_argument(
-        "--interrupted",
-        action="store_true",
-        help="Override interrupted parameter"
     )
     
     return parser.parse_args()
@@ -186,8 +171,6 @@ def update_config(config: dict, args: argparse.Namespace):
         config['bootstrap']['run'] = False
     if args.bootstrap_iterations:
         config['bootstrap']['iterations'] = args.bootstrap_iterations
-    if args.bootstrap_runs:
-        config['bootstrap']['runs'] = args.bootstrap_runs
     if args.simultaneous_runs:
         config['bootstrap']['simultaneous_runs'] = args.simultaneous_runs
     
@@ -196,10 +179,6 @@ def update_config(config: dict, args: argparse.Namespace):
         config['fdr']['run'] = False
     if args.fdr_iterations:
         config['fdr']['number'] = args.fdr_iterations
-    if args.shuffling_segments:
-        config['fdr']['shuffling_segments'] = args.shuffling_segments
-    if args.interrupted:
-        config['fdr']['interrupted'] = True
     
     return config
 

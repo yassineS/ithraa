@@ -9,10 +9,10 @@
 - [ ] Documentation.
 - [ ] Example data.
 - [ ] Testing vs. perl.
-- [ ] Check and clean parameters that don't do anything anymore:
-	- [ ] fdr.interrupted.
-	- [ ] fdr.shuffling_segments.
-	- [ ] bootstrap.runs.
+- [x] Check and clean parameters that don't do anything anymore:
+	- [x] fdr.interrupted.
+	- [x] fdr.shuffling_segments.
+	- [x] bootstrap.runs.
 - [x] Fix memory management issues in parallel processing.
 - [x] Improve error handling when thresholds fail to process.
 - [x] Switch to faster libries:

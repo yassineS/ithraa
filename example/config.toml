@@ -30,20 +30,15 @@ num_threads = 6 # Number of threads to use for parallel processing
 [bootstrap]
 run = true
 iterations = 10
-runs = 1
 simultaneous_runs = 25
 
 # FDR parameters
 [fdr]
 run = true
 number = 10
-shuffling_segments = 10
-interrupted = false
 
 # Population parameters
 [population]
-population = "YRI"
-groups = ["AFR"]
 
 # Threshold parameters
 [thresholds]

@@ -150,7 +150,6 @@ def _process_threshold(
     tolerance: float = 0.1,
     run_bootstrap: bool = True,
     bootstrap_iterations: int = 1000,
-    bootstrap_runs: int = 10,
     log_prefix: str = ""
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -167,7 +166,6 @@ def _process_threshold(
         tolerance: Tolerance for matching control genes
         run_bootstrap: Whether to run bootstrap analysis
         bootstrap_iterations: Number of bootstrap iterations
-        bootstrap_runs: Number of bootstrap runs
         log_prefix: Prefix for log messages (used by parallel processing)
         
     Returns:
@@ -265,7 +263,7 @@ def _process_threshold(
             
             # Run bootstrap analysis
             population_results = []
-            for run_idx in range(bootstrap_runs):
+            for run_idx in range(10):  # Fixed number of bootstrap runs
                 # Resample target scores
                 target_bootstrap = bootstrap_analysis(
                     target_scores,
@@ -384,7 +382,6 @@ class GeneSetEnrichmentPipeline:
         # Check bootstrap parameters
         run_bootstrap = self.config.config.get('bootstrap', {}).get('run', True)
         bootstrap_iterations = self.config.config.get('bootstrap', {}).get('iterations', 1000)
-        bootstrap_runs = self.config.config.get('bootstrap', {}).get('runs', 10)
         
         # Get control parameters
         min_distance = self.config.analysis_params.get('min_distance', 1000000)  # 1 Mb default
@@ -416,7 +413,6 @@ class GeneSetEnrichmentPipeline:
                         tolerance=tolerance,
                         run_bootstrap=run_bootstrap,
                         bootstrap_iterations=bootstrap_iterations,
-                        bootstrap_runs=bootstrap_runs,
                         log_prefix="[Parallel] "
                     )
                     
@@ -476,7 +472,7 @@ class GeneSetEnrichmentPipeline:
                         self.logger.info(f"Attempting to process {len(failed_thresholds)} failed thresholds sequentially")
                         self._run_sequential(processed_genes, failed_thresholds, threshold_results, 
                                            min_distance, tolerance, run_bootstrap, 
-                                           bootstrap_iterations, bootstrap_runs)
+                                           bootstrap_iterations)
             except Exception as e:
                 self.logger.error(f"Error in parallel processing: {str(e)}")
                 # If we have some results already, continue with what we have
@@ -487,12 +483,12 @@ class GeneSetEnrichmentPipeline:
                     self.logger.info("Falling back to sequential processing")
                     self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
                                        min_distance, tolerance, run_bootstrap, 
-                                       bootstrap_iterations, bootstrap_runs)
+                                       bootstrap_iterations)
         else:
             # Fall back to sequential processing if only one thread is requested
             self._run_sequential(processed_genes, rank_thresholds, threshold_results, 
                                min_distance, tolerance, run_bootstrap,
-                               bootstrap_iterations, bootstrap_runs)
+                               bootstrap_iterations)
         
         # Check if we have any results
         if not threshold_results:
@@ -520,7 +516,7 @@ class GeneSetEnrichmentPipeline:
         self.logger.info(f"Pipeline completed in {elapsed_time:.2f} seconds")
 
     def _run_sequential(self, processed_genes, rank_thresholds, threshold_results,
-                        min_distance, tolerance, run_bootstrap, bootstrap_iterations, bootstrap_runs):
+                        min_distance, tolerance, run_bootstrap, bootstrap_iterations):
         """Run threshold processing sequentially.
         
         This is a fallback method when parallel processing is not available or fails.
@@ -533,7 +529,6 @@ class GeneSetEnrichmentPipeline:
             tolerance: Tolerance for matching control genes
             run_bootstrap: Whether to run bootstrap analysis
             bootstrap_iterations: Number of bootstrap iterations
-            bootstrap_runs: Number of bootstrap runs
         """
         self.logger.info("Running threshold processing sequentially")
         
@@ -553,8 +548,7 @@ class GeneSetEnrichmentPipeline:
                         min_distance=min_distance,
                         tolerance=tolerance,
                         run_bootstrap=run_bootstrap,
-                        bootstrap_iterations=bootstrap_iterations,
-                        bootstrap_runs=bootstrap_runs
+                        bootstrap_iterations=bootstrap_iterations
                     )
                     
                     # Update the master results dictionary
