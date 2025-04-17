@@ -310,9 +310,11 @@ def test_data_processing(sample_data):
 
 def test_statistical_analysis(sample_data):
     """Test statistical analysis functions."""
+    import numpy as np  # Use standard NumPy instead of Numba's NumPy
+    
     # Test enrichment calculation
-    target_counts = nb.np.array([5, 10, 15])
-    control_counts = nb.np.array([3, 6, 9])
+    target_counts = np.array([5, 10, 15])
+    control_counts = np.array([3, 6, 9])
     enrichment = calculate_enrichment(target_counts, control_counts)
     
     assert 'enrichment_ratio' in enrichment
@@ -320,7 +322,7 @@ def test_statistical_analysis(sample_data):
     assert enrichment['enrichment_ratio'] > 0
     
     # Test FDR analysis
-    p_values = nb.np.array([0.05, 0.01, 0.2])
+    p_values = np.array([0.05, 0.01, 0.2])
     fdr_results = perform_fdr_analysis(p_values)
     
     assert 'reject' in fdr_results
@@ -328,7 +330,7 @@ def test_statistical_analysis(sample_data):
     assert len(fdr_results['reject']) == len(p_values)
     
     # Test bootstrap analysis
-    data = nb.np.array([0.1, 0.2, 0.3])
+    data = np.array([0.1, 0.2, 0.3])
     bootstrap_results = bootstrap_analysis(data)
     
     assert 'mean' in bootstrap_results

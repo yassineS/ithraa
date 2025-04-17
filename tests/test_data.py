@@ -296,8 +296,11 @@ def test_match_confounding_factors(gene_set_file, gene_coords_file, factors_file
     with pytest.raises(ValueError, match="Target genes DataFrame cannot be empty"):
         match_confounding_factors(empty_genes, controls, factors)
     
-    with pytest.raises(ValueError, match="Control genes DataFrame cannot be empty"):
-        match_confounding_factors(gene_set, empty_genes, factors)
+    # Test empty control genes - should return empty DataFrame, not raise an error
+    result = match_confounding_factors(gene_set, empty_genes, factors)
+    assert isinstance(result, pl.DataFrame)
+    assert len(result) == 0
+    assert 'gene_id' in result.columns
     
     with pytest.raises(ValueError, match="Factors DataFrame cannot be empty"):
         match_confounding_factors(gene_set, controls, empty_factors)

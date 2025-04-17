@@ -322,15 +322,23 @@ class GeneSetEnrichmentPipeline:
             self.config.input_files['gene_list_file'],
             selected_population=self.config.selected_populations
         )
+        # For backward compatibility, also assign to self.gene_list
+        self.gene_list = (self.gene_list_df, self.population_names)
         
         # Load gene set (target genes)
-        self.gene_set_df = load_gene_set(self.config.input_files['gene_set'])
+        # Use 'gene_set' key if available, otherwise fallback to 'gene_list_file'
+        gene_set_file = self.config.input_files.get('gene_set', self.config.input_files['gene_list_file'])
+        self.gene_set_df = load_gene_set(gene_set_file)
         
         # Load gene coordinates
         self.gene_coords_df = load_gene_coords(self.config.input_files['gene_coords_file'])
+        # For backward compatibility, also assign to self.gene_coords
+        self.gene_coords = self.gene_coords_df
         
         # Load confounding factors
         self.factors_df = load_factors(self.config.input_files['factors_file'])
+        # For backward compatibility, also assign to self.factors
+        self.factors = self.factors_df
         
         # Load optional files
         if 'valid_genes_file' in self.config.input_files:
@@ -589,7 +597,6 @@ class GeneSetEnrichmentPipeline:
             results_dict: Dictionary to store results for this threshold
         """
         fdr_iterations = self.config.config.get('fdr', {}).get('number', 1000)
-        segments = self.config.config.get('fdr', {}).get('shuffling_segments', 1)
         
         # Get chromosome sizes for genome shuffling
         self.logger.debug("Preparing chromosome size data for shuffling")
@@ -681,7 +688,17 @@ class GeneSetEnrichmentPipeline:
         plots_path = ensure_dir(output_path / 'plots')
         
         # 1. Save results in the original pipeline format (a plain text file with threshold-based results)
-        original_format_file = data_path / f"{Path(self.config.input_files['gene_set']).stem}_results.txt"
+        # Handle both naming conventions: 'gene_set' and 'target_gene_set'
+        gene_set_key = None
+        if 'gene_set' in self.config.input_files:
+            gene_set_key = 'gene_set'
+        elif 'target_gene_set' in self.config.input_files:
+            gene_set_key = 'target_gene_set'
+        else:
+            # Fallback to gene_list_file if neither are available
+            gene_set_key = 'gene_list_file'
+        
+        original_format_file = data_path / f"{Path(self.config.input_files[gene_set_key]).stem}_results.txt"
         
         with open(original_format_file, 'w') as f:
             for threshold in sorted(self.threshold_results.keys(), reverse=True):
@@ -807,7 +824,7 @@ class GeneSetEnrichmentPipeline:
             f.write("### Plotting\n\n")
             f.write("You can use the included plot_results.py script to visualize these results:\n\n")
             f.write("```bash\n")
-            f.write(f"python plot_results.py --results-dir {output_dir} --gene-set \"{Path(self.config.input_files['gene_set']).stem}\"\n")
+            f.write(f"python plot_results.py --results-dir {output_dir} --gene-set \"{Path(self.config.input_files[gene_set_key]).stem}\"\n")
             f.write("```\n")
         
         self.logger.info(f"Saved README to {readme_file}")

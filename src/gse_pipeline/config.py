@@ -19,11 +19,28 @@ class PipelineConfig:
         self.config_path = config_path
         
         # Load configuration file
-        with open(config_path, "rb") as f:
-            self.config = tomli.load(f)
+        try:
+            with open(config_path, "rb") as f:
+                self.config = tomli.load(f)
+        except FileNotFoundError:
+            raise ValueError(f"Error loading configuration file: {config_path} does not exist")
+        except Exception as e:
+            raise ValueError(f"Error loading configuration file: {str(e)}")
+        
+        # Validate required sections
+        required_sections = ['input', 'output', 'analysis']
+        missing_sections = [section for section in required_sections if section not in self.config]
+        if missing_sections:
+            raise ValueError(f"Missing required sections in configuration: {', '.join(missing_sections)}")
         
         # Extract input file paths
         self.input_files = self.config.get("input", {})
+        
+        # Validate required input files
+        required_input_files = ['gene_list_file', 'gene_coords_file', 'factors_file']
+        missing_files = [file for file in required_input_files if file not in self.input_files]
+        if missing_files:
+            raise ValueError(f"Missing required input files in configuration: {', '.join(missing_files)}")
         
         # Extract output configuration
         self.output_config = self.config.get("output", {})
@@ -74,6 +91,25 @@ class PipelineConfig:
             List of rank threshold values in descending order
         """
         return sorted(self.rank_thresholds, reverse=True)
+    
+    def get_output_path(self, subdir: Optional[str] = None) -> Path:
+        """Get the path to the output directory or a subdirectory within it.
+        
+        Args:
+            subdir: Optional subdirectory name within the output directory
+            
+        Returns:
+            Path object for the requested directory
+        """
+        # Get the output directory from the output configuration
+        output_dir = self.output_config.get("output_dir", self.output_config.get("directory", "results"))
+        base_path = Path(output_dir)
+        
+        # If a subdirectory is specified, append it to the base path
+        if subdir:
+            return base_path / subdir
+        
+        return base_path
         
     def save_config(self, output_path: Union[str, Path]) -> None:
         """Save the configuration to a TOML file.

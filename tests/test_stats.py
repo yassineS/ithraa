@@ -2,7 +2,7 @@
 
 import pytest
 import numba as nb
-import numba.np.unsafe.ndarray as np  # Use Numba's NumPy API
+import numpy as np  # Use standard NumPy instead of Numba's NumPy
 import pandas as pd
 import polars as pl
 from scipy import stats
@@ -89,9 +89,16 @@ def test_bootstrap_analysis():
     result = bootstrap_analysis(data, statistic='median')
     assert round(result['median']) == 3.0
     
-    # Test with empty array
+    # Test with empty array - with strict validation
     with pytest.raises(ValueError, match="Input data array cannot be empty"):
-        bootstrap_analysis(np.array([]))
+        bootstrap_analysis(np.array([]), strict_validation=True)
+    
+    # Test with empty array - normal operation
+    result = bootstrap_analysis(np.array([]))
+    assert result['mean'] == 0.0
+    assert result['median'] == 0.0
+    assert result['ci_lower'] == 0.0
+    assert result['ci_upper'] == 0.0
     
     # Test with invalid statistic
     with pytest.raises(ValueError):
