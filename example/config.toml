@@ -40,11 +40,6 @@ number = 1000
 shuffling_segments = 10
 interrupted = false
 
-# Sweep parameters
-[sweep]
-count = false
-run_count = true
-
 # Population parameters
 [population]
 population = "YRI"

@@ -145,19 +145,6 @@ def parse_args():
         help="Override interrupted parameter"
     )
     
-    # Sweep parameter overrides
-    sweep_group = parser.add_argument_group("Sweep parameter overrides")
-    sweep_group.add_argument(
-        "--no-count",
-        action="store_true",
-        help="Disable sweep counting"
-    )
-    sweep_group.add_argument(
-        "--no-run-count",
-        action="store_true",
-        help="Disable sweep run counting"
-    )
-    
     return parser.parse_args()
 
 def update_config(config: dict, args: argparse.Namespace):
@@ -213,12 +200,6 @@ def update_config(config: dict, args: argparse.Namespace):
         config['fdr']['shuffling_segments'] = args.shuffling_segments
     if args.interrupted:
         config['fdr']['interrupted'] = True
-    
-    # Sweep parameter overrides
-    if args.no_count:
-        config['sweep']['count'] = False
-    if args.no_run_count:
-        config['sweep']['run_count'] = False
     
     return config
 

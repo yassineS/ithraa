@@ -4,18 +4,19 @@
 - [ ] Github pages
 - [ ] Testing vs. perl
 - [ ] Benchmarking vs. perl
-- [ ] Write parquet files
-- [x] Parallelise FDR
-- [x] CLI
-- [ ] Example data
-- [x] Pytest
-- [ ] Mahalanobis distance matching
-- [ ] Parallelise the "Processing thresholds" steps
-- [ ] don't print thresholds to console, but write to log file.
-- [ ] Add timestamp to logfile name.
+- [ ] Write parquet files.
+- [x] Parallelise FDR.
+- [x] CLI.
+- [ ] Example data.
+- [x] Pytest.
+- [ ] Rotate scores within Chromosome.
+- [ ] Mahalanobis distance matching.
+- [ ] Parallelise the "Processing thresholds" steps.
+- [ ] Don't print thresholds to console, but write to log file.
+- [x] Add timestamp to logfile name.
 - [x] what does "interest" parameter in input do?
-- [ ] use "population" parameter to select a subset of populations from the input ranks file.
+- [x] use "population" parameter to select a subset of populations from the input ranks file.
 - [x] Pipeline execution failed: 'GeneSetEnrichmentPipeline' object has no attribute 'save_results'.
-- [ ] Check and clean if necessary the legacy parameters:
-	- [ ] prefix = "all_ihsfreqafr_ranks"
-	- [ ] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
+- [x] Check and clean if necessary the legacy parameters:
+	- [x] prefix = "all_ihsfreqafr_ranks"
+	- [x] sizes = ["50kb", "100kb", "200kb", "500kb", "1000kb"]
