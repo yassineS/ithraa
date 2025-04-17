@@ -566,3 +566,102 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
         return pl.DataFrame(schema={'gene_id': pl.Utf8, 'chrom': pl.Utf8, 'start': pl.Int64, 'end': pl.Int64})
         
     return pl.concat(results)
+
+@nb.njit(parallel=True)
+def _shuffle_genes_within_chromosome(starts, ends, chrom_size: int) -> Tuple[nb.types.Array, nb.types.Array]:
+    """
+    Shuffle gene positions within a chromosome treating it as circular.
+    
+    Args:
+        starts: Array of start positions
+        ends: Array of end positions
+        chrom_size: Size of chromosome
+        
+    Returns:
+        Tuple of (shuffled_starts, shuffled_ends) arrays
+    """
+    n_genes = len(starts)
+    if n_genes == 0:
+        return starts, ends
+    
+    # Generate a random shift amount for the chromosome
+    # This will be used to rotate all genes by the same amount
+    shift = np.random.randint(0, chrom_size)
+    
+    # Create arrays for the shuffled positions
+    shuffled_starts = np.zeros(n_genes, dtype=np.int64)
+    shuffled_ends = np.zeros(n_genes, dtype=np.int64)
+    
+    # Apply the shift to each gene
+    for i in nb.prange(n_genes):
+        # Calculate new start position with circular wrapping
+        new_start = (starts[i] + shift) % chrom_size
+        
+        # Calculate gene length
+        gene_length = ends[i] - starts[i]
+        
+        # Calculate new end position (may wrap around)
+        new_end = (new_start + gene_length) % chrom_size
+        
+        # Handle the special case where the gene wraps around the chromosome
+        if new_end < new_start:
+            # For simplicity, if a gene would wrap around, place it at the beginning
+            new_start = 0
+            new_end = gene_length
+        
+        shuffled_starts[i] = new_start
+        shuffled_ends[i] = new_end
+    
+    return shuffled_starts, shuffled_ends
+
+def shuffle_genome_circular(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl.DataFrame:
+    """
+    Shuffle gene positions within each chromosome by rotating gene positions.
+    Treats each chromosome as circular rather than linear.
+    
+    Args:
+        gene_coords: DataFrame with gene coordinates
+        chrom_sizes: Dictionary mapping chromosome names to sizes
+        
+    Returns:
+        DataFrame with shuffled gene coordinates
+    """
+    if gene_coords.height == 0:
+        raise ValueError("Gene coordinates DataFrame cannot be empty")
+    
+    # Process each chromosome separately
+    results = []
+    
+    for chrom, size in chrom_sizes.items():
+        # Get genes on this chromosome
+        chrom_genes = gene_coords.filter(pl.col('chrom') == chrom)
+        
+        # Skip if no genes on this chromosome
+        if chrom_genes.height == 0:
+            continue
+        
+        # Get gene data as arrays for faster processing
+        gene_ids = chrom_genes['gene_id'].to_numpy()
+        starts = chrom_genes['start'].to_numpy()
+        ends = chrom_genes['end'].to_numpy()
+        
+        # Use the circular shuffling function - only pass numeric arrays
+        shuffled_starts, shuffled_ends = _shuffle_genes_within_chromosome(
+            starts, ends, size
+        )
+        
+        # Create DataFrame for this chromosome
+        chrom_result = pl.DataFrame({
+            'gene_id': gene_ids,
+            'chrom': [chrom] * len(gene_ids),
+            'start': shuffled_starts,
+            'end': shuffled_ends
+        })
+        
+        results.append(chrom_result)
+    
+    # Combine results from all chromosomes
+    if not results:
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'chrom': pl.Utf8, 'start': pl.Int64, 'end': pl.Int64})
+    
+    return pl.concat(results)

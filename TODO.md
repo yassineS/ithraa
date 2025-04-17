@@ -4,15 +4,17 @@
 - [ ] Github pages.
 - [ ] Rotate scores within Chromosome.
 - [ ] Mahalanobis distance matching.
+- [ ] For very large datasets or extremely long runs, we could consider implementing a checkpoint/resume feature in the future if needed.
 
 ### BUG FIXES and Core Functionality
 - [ ] Documentation.
 - [ ] Example data.
 - [ ] Testing vs. perl.
-- [x] Check and clean parameters that don't do anything anymore:
+- [] Check and clean parameters that don't do anything anymore:
 	- [x] fdr.interrupted.
 	- [x] fdr.shuffling_segments.
 	- [x] bootstrap.runs.
+	- [ ] bootstrap.simultaneous_runs.
 - [x] Fix memory management issues in parallel processing.
 - [x] Improve error handling when thresholds fail to process.
 - [x] Switch to faster libries:

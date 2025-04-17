@@ -331,3 +331,59 @@ def test_shuffle_genome(gene_coords_file):
     empty_coords = pl.DataFrame(schema={'gene_id': pl.Utf8, 'chrom': pl.Utf8, 'start': pl.Int64, 'end': pl.Int64})
     with pytest.raises(ValueError, match="Gene coordinates DataFrame cannot be empty"):
         shuffle_genome(empty_coords, chrom_sizes)
+
+def test_shuffle_genome_circular(gene_coords_file):
+    """Test circular shuffling of genome."""
+    from gse_pipeline.data import shuffle_genome_circular
+    
+    gene_coords = load_gene_coords(gene_coords_file)
+    
+    # Define chromosome sizes
+    chrom_sizes = {'chr1': 2000, 'chr2': 2000}
+    
+    # Shuffle genome using circular shuffling
+    shuffled = shuffle_genome_circular(gene_coords, chrom_sizes)
+    
+    assert isinstance(shuffled, pl.DataFrame)
+    assert len(shuffled) == len(gene_coords)
+    assert set(shuffled.columns) == {'gene_id', 'chrom', 'start', 'end'}
+    
+    # Verify chromosome assignments are preserved
+    for chrom in gene_coords['chrom'].unique():
+        original_count = len(gene_coords.filter(pl.col('chrom') == chrom))
+        shuffled_count = len(shuffled.filter(pl.col('chrom') == chrom))
+        assert original_count == shuffled_count
+    
+    # Ensure gene lengths are preserved
+    original_genes = gene_coords.to_dicts()
+    shuffled_genes = shuffled.to_dicts()
+    
+    # Create a map of gene_id to length for easier comparison
+    original_lengths = {g['gene_id']: g['end'] - g['start'] for g in original_genes}
+    shuffled_lengths = {g['gene_id']: g['end'] - g['start'] for g in shuffled_genes}
+    
+    for gene_id in original_lengths:
+        assert original_lengths[gene_id] == shuffled_lengths[gene_id], f"Gene length changed for {gene_id}"
+    
+    # Verify that at least some positions have changed (shuffling happened)
+    positions_changed = False
+    for gene in original_genes:
+        gene_id = gene['gene_id']
+        shuffled_gene = next(g for g in shuffled_genes if g['gene_id'] == gene_id)
+        if gene['start'] != shuffled_gene['start'] or gene['end'] != shuffled_gene['end']:
+            positions_changed = True
+            break
+    
+    assert positions_changed, "Gene positions should change after shuffling"
+    
+    # Verify genes within each chromosome are properly positioned (within chromosome bounds)
+    for chrom, size in chrom_sizes.items():
+        chrom_genes = shuffled.filter(pl.col('chrom') == chrom)
+        for g in chrom_genes.to_dicts():
+            assert 0 <= g['start'] < size, f"Gene {g['gene_id']} start position outside chromosome boundaries"
+            assert 0 < g['end'] <= size, f"Gene {g['gene_id']} end position outside chromosome boundaries"
+    
+    # Test with empty input
+    empty_coords = pl.DataFrame(schema={'gene_id': pl.Utf8, 'chrom': pl.Utf8, 'start': pl.Int64, 'end': pl.Int64})
+    with pytest.raises(ValueError, match="Gene coordinates DataFrame cannot be empty"):
+        shuffle_genome_circular(empty_coords, chrom_sizes)
