@@ -1,20 +1,12 @@
 """Main pipeline implementation for gene set enrichment analysis."""
 
 import logging
-import multiprocessing
 import os
-import sys
 import platform
-from pathlib import Path
 import time
-from typing import Dict, List, Optional, Any
-import json
-from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import polars as pl
-import numba as nb
-import numpy as np  # Use standard numpy instead of Numba's numpy API
 from tqdm.auto import tqdm
 
 # Configure tqdm to work properly on macOS
