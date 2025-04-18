@@ -13,15 +13,15 @@ from statsmodels.stats.multitest import multipletests
 
 # Core numba-optimized functions for inner loops and heavy calculations
 
-# Vectorized operations for better performance with SIMD
-@nb.vectorize(['float64(float64)'], nopython=True)
+# Simplified versions for better compatibility
+@nb.njit
 def _abs_vec(x):
-    """Vectorized absolute value using Numba"""
+    """Optimized absolute value using Numba"""
     return -x if x < 0 else x
 
-@nb.vectorize(['float64(float64)'], nopython=True)
+@nb.njit
 def _sqrt_vec(x):
-    """Vectorized square root using Numba"""
+    """Optimized square root using Numba"""
     return x ** 0.5
 
 @nb.njit(parallel=True)
@@ -106,9 +106,9 @@ def _calculate_pairwise_distances(gene_ids, starts, ends):
             
     return gene_id1, gene_id2, distances
 
-@nb.vectorize(['float64(float64[:])'])
+@nb.njit
 def _mean(arr):
-    """Vectorized mean calculation using Numba"""
+    """Calculate mean of array using Numba"""
     if len(arr) == 0:
         return 0.0
     return np.sum(arr) / len(arr)
@@ -134,6 +134,39 @@ def _abs(x):
 def _sqrt(x):
     """Square root using Numba - legacy version for compatibility"""
     return x ** 0.5
+
+@nb.njit
+def _calculate_significance_counts_helper(observed_score, null_score):
+    """Helper function for significance count calculation"""
+    return 1 if null_score >= observed_score else 0
+
+@nb.njit(parallel=True)
+def _calculate_significance_counts(observed_score: float, null_scores) -> int:
+    """
+    Count how many null scores are greater than or equal to the observed score.
+    Uses parallel processing for large arrays.
+    
+    Args:
+        observed_score: Observed score
+        null_scores: Array of null distribution scores
+        
+    Returns:
+        Count of scores >= observed
+    """
+    # For small arrays, direct counting is faster than parallelization overhead
+    if len(null_scores) < 10000:
+        count = 0
+        for i in range(len(null_scores)):
+            if null_scores[i] >= observed_score:
+                count += 1
+        return count
+    
+    # For large arrays, use parallel processing
+    count = 0
+    for i in nb.prange(len(null_scores)):
+        if null_scores[i] >= observed_score:
+            count += 1
+    return count
 
 def calculate_enrichment(target_counts, control_counts) -> Dict[str, float]:
     """
@@ -368,52 +401,6 @@ def compute_enrichment_score(
         _, p_value = stats.ttest_ind(target_array, control_array, equal_var=False)
     
     return enrichment_score, float(p_value)
-
-@nb.vectorize(['int64(float64, float64[:])'])
-def _calculate_significance_counts_vec(observed_score, null_scores):
-    """
-    Vectorized version to count how many null scores are greater than or equal to the observed score.
-    
-    Args:
-        observed_score: Observed score
-        null_scores: Array of null distribution scores
-        
-    Returns:
-        Count of scores >= observed
-    """
-    count = 0
-    for i in range(len(null_scores)):
-        if null_scores[i] >= observed_score:
-            count += 1
-    return count
-
-@nb.njit(parallel=True)
-def _calculate_significance_counts(observed_score: float, null_scores) -> int:
-    """
-    Count how many null scores are greater than or equal to the observed score.
-    Uses parallel processing for large arrays.
-    
-    Args:
-        observed_score: Observed score
-        null_scores: Array of null distribution scores
-        
-    Returns:
-        Count of scores >= observed
-    """
-    # For small arrays, direct counting is faster than parallelization overhead
-    if len(null_scores) < 10000:
-        count = 0
-        for i in range(len(null_scores)):
-            if null_scores[i] >= observed_score:
-                count += 1
-        return count
-    
-    # For large arrays, use parallel processing
-    count = 0
-    for i in nb.prange(len(null_scores)):
-        if null_scores[i] >= observed_score:
-            count += nb.atomic.add(0, 1)  # Atomic add for thread safety
-    return count
 
 def calculate_significance(
     observed_score: float,

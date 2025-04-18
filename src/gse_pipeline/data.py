@@ -12,46 +12,62 @@ import logging
 # Import the optimized pairwise distance calculator from stats.py
 from .stats import _calculate_pairwise_distances
 
-# Define a guvectorize function for factor matching to increase performance
-@nb.guvectorize(
-    [(nb.float64[:], nb.float64[:], nb.float64, nb.boolean_[:])],
-    '(n),(n),()->()',
-    nopython=True
-)
-def _match_gene_factors(target_factors, control_factors, tolerance, result):
+# Helper function for factor matching with parallel capabilities
+@nb.njit(parallel=True)
+def _match_gene_factors(target_factors, control_factors, tolerance):
     """
-    Match a single target gene with a single control gene based on factors.
-    This is a guvectorize function that can operate on arrays of genes.
+    Match gene factors within tolerance.
     
     Args:
-        target_factors: Factor values for a target gene
-        control_factors: Factor values for a control gene
+        target_factors: Factor values for target genes
+        control_factors: Factor values for control genes
         tolerance: Maximum allowed relative difference
-        result: Output result (True if all factors match within tolerance)
+        
+    Returns:
+        2D boolean array of matches
     """
-    result[0] = True
-    for i in range(len(target_factors)):
-        target_val = target_factors[i]
-        control_val = control_factors[i]
-        
-        # Calculate relative difference
-        if abs(target_val) > 1e-10:
-            relative_diff = abs(target_val - control_val) / abs(target_val)
-        else:
-            relative_diff = abs(control_val) > 1e-10
-        
-        # If any factor is outside tolerance, this is not a match
-        if relative_diff > tolerance:
-            result[0] = False
-            break
+    n_targets = target_factors.shape[0]
+    n_controls = control_factors.shape[0]
+    n_factors = target_factors.shape[1]
+    matches = np.ones((n_targets, n_controls), dtype=np.bool_)
+    
+    # Check each factor for matches
+    for i in nb.prange(n_targets):
+        for j in range(n_controls):
+            for k in range(n_factors):
+                target_val = target_factors[i, k]
+                control_val = control_factors[j, k]
+                
+                # Calculate relative difference
+                if abs(target_val) > 1e-10:
+                    relative_diff = abs(target_val - control_val) / abs(target_val)
+                else:
+                    relative_diff = abs(control_val) > 1e-10
+                
+                # If any factor is outside tolerance, this is not a match
+                if relative_diff > tolerance:
+                    matches[i, j] = False
+                    break
+    
+    return matches
 
-# Vector operation for computing gene lengths efficiently
-@nb.vectorize(['int64(int64, int64)'], nopython=True)
-def _compute_gene_lengths(start, end):
+@nb.njit
+def _compute_gene_lengths(starts, ends):
     """
-    Compute gene lengths using vectorized operation.
+    Compute gene lengths.
+    
+    Args:
+        starts: Array of start positions
+        ends: Array of end positions
+        
+    Returns:
+        Array of gene lengths
     """
-    return end - start
+    n = len(starts)
+    lengths = np.zeros(n, dtype=np.int64)
+    for i in range(n):
+        lengths[i] = ends[i] - starts[i]
+    return lengths
 
 def load_gene_list(
     file_path: Path, 
@@ -455,40 +471,8 @@ def match_confounding_factors(
     if len(target_values) == 0 or len(control_values) == 0:
         return pl.DataFrame(schema={'gene_id': pl.Utf8, **{col: pl.Float64 for col in factor_cols}})
     
-    # Use our guvectorize function for matching
-    # Create a results matrix to store matching results
-    matches = np.zeros((len(target_values), len(control_values)), dtype=np.bool_)
-    
-    # For large datasets, use batched processing to avoid memory issues
-    batch_size = 1000
-    
-    if len(target_values) * len(control_values) < batch_size * batch_size:
-        # Small enough - process all at once
-        for i in range(len(target_values)):
-            # Apply guvectorize to compare this target gene with all control genes at once
-            results = np.zeros(len(control_values), dtype=np.bool_)
-            _match_gene_factors(
-                np.tile(target_values[i], (len(control_values), 1)), 
-                control_values, 
-                tolerance, 
-                results
-            )
-            matches[i] = results
-    else:
-        # Process in batches
-        for i in range(len(target_values)):
-            for j_batch in range(0, len(control_values), batch_size):
-                j_end = min(j_batch + batch_size, len(control_values))
-                batch = control_values[j_batch:j_end]
-                
-                results = np.zeros(len(batch), dtype=np.bool_)
-                _match_gene_factors(
-                    np.tile(target_values[i], (len(batch), 1)), 
-                    batch, 
-                    tolerance, 
-                    results
-                )
-                matches[i, j_batch:j_end] = results
+    # Use our helper function for matching
+    matches = _match_gene_factors(target_values, control_values, tolerance)
     
     # Collect control genes that match any target gene
     matched_indices = set()
