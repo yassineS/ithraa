@@ -7,7 +7,7 @@ import pandas as pd
 import polars as pl
 from scipy import stats
 
-from gse_pipeline.stats import (
+from ithraa.stats import (
     calculate_enrichment,
     perform_fdr_analysis,
     bootstrap_analysis,

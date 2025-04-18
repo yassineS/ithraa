@@ -13,14 +13,14 @@ import tempfile
 import shutil
 from tomli_w import dump as tomli_w_dump
 
-from gse_pipeline.pipeline import (
+from ithraa.pipeline import (
     GeneSetEnrichmentPipeline,
     _perform_permutation,
     _process_threshold,
     _calculate_enrichment_ratio
 )
-from gse_pipeline.config import PipelineConfig
-from gse_pipeline.data import (
+from ithraa.config import PipelineConfig
+from ithraa.data import (
     load_gene_list,
     process_gene_set,
     find_control_genes,
@@ -28,7 +28,7 @@ from gse_pipeline.data import (
     shuffle_genome,
     compute_gene_distances
 )
-from gse_pipeline.stats import (
+from ithraa.stats import (
     calculate_enrichment,
     perform_fdr_analysis,
     bootstrap_analysis
@@ -159,8 +159,8 @@ def test_pipeline_run(minimal_config_file):
     pipeline = GeneSetEnrichmentPipeline(minimal_config_file)
     pipeline.run()  # Should not raise any errors
 
-@patch("gse_pipeline.pipeline.GeneSetEnrichmentPipeline._run_permutation_fdr")
-@patch("gse_pipeline.pipeline.GeneSetEnrichmentPipeline.save_results")
+@patch("ithraa.pipeline.GeneSetEnrichmentPipeline._run_permutation_fdr")
+@patch("ithraa.pipeline.GeneSetEnrichmentPipeline.save_results")
 def test_pipeline_initialization_and_run(mock_save, mock_fdr, minimal_config_file):
     """Test pipeline initialization and run with mocked expensive operations."""
     pipeline = GeneSetEnrichmentPipeline(minimal_config_file)

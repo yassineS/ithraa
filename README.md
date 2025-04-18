@@ -26,8 +26,8 @@ We recommend using `uv` for faster dependency management.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone the repository
-git clone https://github.com/yourusername/gse_pipeline.git
-cd gse_pipeline
+git clone https://github.com/yourusername/ithraa.git
+cd ithraa
 
 # Create a virtual environment and install the package
 uv venv
@@ -50,7 +50,7 @@ pip install -e ".[dev]"
 ## Usage
 
 ```python
-from gse_pipeline import GeneSetEnrichmentPipeline
+from ithraa import GeneSetEnrichmentPipeline
 
 # Initialize the pipeline
 pipeline = GeneSetEnrichmentPipeline(
@@ -210,7 +210,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you use this software in your research, please cite:
 
 ```bibtex
-@software{gse_pipeline,
+@software{ithraa,
   title = {Gene Set Enrichment Pipeline},
   author = {Yassine Souilmi},
   year = {2025},

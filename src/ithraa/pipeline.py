@@ -27,7 +27,7 @@ tqdm_kwargs = {
     'disable': False,       # Never disable the progress bar
 }
 
-from .config import PipelineConfig
+from ithraa.config import PipelineConfig
 from .data import (
     load_gene_list, 
     load_gene_set, 
@@ -41,13 +41,13 @@ from .data import (
     match_confounding_factors,
     shuffle_genome_circular
 )
-from .stats import (
+from ithraa.stats import (
     calculate_enrichment,
     perform_fdr_analysis,
     bootstrap_analysis,
     calculate_significance
 )
-from .utils import ensure_dir
+from ithraa.utils import ensure_dir
 
 @nb.njit
 def _calculate_enrichment_ratio(target_scores, control_scores) -> float:

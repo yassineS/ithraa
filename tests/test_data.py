@@ -9,7 +9,7 @@ import polars as pl
 import numba as nb
 import numba.np.unsafe.ndarray as np  # Use Numba's NumPy API
 
-from gse_pipeline.data import (
+from ithraa.data import (
     load_gene_list,
     load_gene_set,
     load_gene_coords,
@@ -337,7 +337,7 @@ def test_shuffle_genome(gene_coords_file):
 
 def test_shuffle_genome_circular(gene_coords_file):
     """Test circular shuffling of genome."""
-    from gse_pipeline.data import shuffle_genome_circular
+    from ithraa.data import shuffle_genome_circular
     
     gene_coords = load_gene_coords(gene_coords_file)
     

@@ -40,7 +40,7 @@ def setup_logging(log_dir=None, level=logging.INFO):
     root_logger.setLevel(level)
     root_logger.addHandler(console_handler)
     
-    return logging.getLogger('gse_pipeline')
+    return logging.getLogger('ithraa')
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary.
