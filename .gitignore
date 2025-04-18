@@ -18,6 +18,9 @@ __pycache__
 *.mypy_cache
 *.pytest_cache
 .coverage*
+.idx
+*nix
+.vscode
 
 results/
 plots/
