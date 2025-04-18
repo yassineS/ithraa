@@ -3,8 +3,8 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gse_pipeline"
-version = "0.1.0"
+name = "ithraa"
+version = "0.0.1"
 description = "Gene Set Enrichment Pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,10 @@ dev = [
 Documentation = "https://gse-pipeline.readthedocs.io/"
 Repository = "https://github.com/yourusername/gse_pipeline.git"
 Issues = "https://github.com/yourusername/gse_pipeline/issues"
+
+[project.scripts]
+ithraa = "gse_pipeline.cli:cli"
+
 
 [tool.setuptools]
 package-dir = {"" = "src"}

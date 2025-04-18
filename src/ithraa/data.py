@@ -10,7 +10,7 @@ from pathlib import Path
 import logging
 
 # Import the optimized pairwise distance calculator from stats.py
-from .stats import _calculate_pairwise_distances
+from ithraa.stats import _calculate_pairwise_distances
 
 # Helper function for factor matching with parallel capabilities
 @nb.njit(parallel=True)

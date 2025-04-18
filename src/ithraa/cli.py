@@ -8,8 +8,8 @@ import logging
 import sys
 from pathlib import Path
 import tomli
-from tomli_w import dump
-from .pipeline import GeneSetEnrichmentPipeline
+from tomli_w import dump 
+from ithraa.pipeline import GeneSetEnrichmentPipeline
 from .config import PipelineConfig
 
 def parse_args():
@@ -193,7 +193,7 @@ def main():
     # Set up logging first, before any pipeline operations
     output_dir = Path(config.get('output', {}).get('directory', 'results'))
     log_dir = output_dir / 'logs'
-    from .utils import setup_logging
+    from ithraa.utils import setup_logging
     setup_logging(log_dir)
     
     # Log the start of pipeline execution
