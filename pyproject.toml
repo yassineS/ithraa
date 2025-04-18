@@ -49,8 +49,7 @@ Documentation = "https://gse-pipeline.readthedocs.io/"
 # Issues = "https://github.com/yourusername/ithraa/issues"
 
 [project.scripts]
-ithraa = "ithraa.cli:cli"
-
+ithraa = "ithraa.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
