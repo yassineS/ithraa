@@ -45,21 +45,21 @@ dev = [
 
 [project.urls]
 Documentation = "https://gse-pipeline.readthedocs.io/"
-Repository = "https://github.com/yourusername/gse_pipeline.git"
-Issues = "https://github.com/yourusername/gse_pipeline/issues"
+Repository = "https://github.com/yourusername/ithraa.git"
+Issues = "https://github.com/yourusername/ithraa/issues"
 
 [project.scripts]
-ithraa = "gse_pipeline.cli:cli"
+ithraa = "ithraa.cli:cli"
 
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["gse_pipeline"]
+packages = ["ithraa"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=gse_pipeline --cov-report=term-missing"
+addopts = "-v --cov=ithraa --cov-report=term-missing"
 
 [tool.ruff]
 line-length = 88

@@ -6,7 +6,7 @@ from tomli_w import dump as tomli_w_dump
 from pathlib import Path
 import tempfile
 import os
-from gse_pipeline.config import PipelineConfig
+from ithraa.config import PipelineConfig
 
 @pytest.fixture
 def temp_dir():

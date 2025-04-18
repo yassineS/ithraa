@@ -1,1 +1,1 @@
-"""Test suite for the gse_pipeline package.""" 
+"""Test suite for the ithraa package.""" 

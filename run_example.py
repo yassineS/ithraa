@@ -3,8 +3,8 @@ import os
 import multiprocessing
 import time
 from pathlib import Path
-from gse_pipeline import GeneSetEnrichmentPipeline
-from gse_pipeline.config import PipelineConfig
+from ithraa import GeneSetEnrichmentPipeline
+from ithraa.config import PipelineConfig
 
 def run_pipeline():
     # Configure logging to file only for debug messages, console for info and above

@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import shutil
 
-from gse_pipeline.utils import setup_logging, ensure_dir
+from ithraa.utils import setup_logging, ensure_dir
 
 @pytest.fixture
 def temp_dir():
@@ -25,7 +25,7 @@ def test_setup_logging(temp_dir):
     assert (log_dir / "pipeline.log").exists()
     
     # Verify logger is configured
-    logger = logging.getLogger("gse_pipeline")
+    logger = logging.getLogger("ithraa")
     logger.setLevel(logging.INFO)  # Explicitly set the level
     assert logger.level == logging.INFO
     

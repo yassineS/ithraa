@@ -8,9 +8,9 @@ import logging
 import sys
 from pathlib import Path
 import tomli
-from tomli_w import dump 
+from tomli_w import dump
 from ithraa.pipeline import GeneSetEnrichmentPipeline
-from .config import PipelineConfig
+from ithraa.config import PipelineConfig
 
 def parse_args():
     """Parse command line arguments."""
