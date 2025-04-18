@@ -14,7 +14,7 @@ The name إثراء (ʾithrāʾ) means enrichment in arabic (inspired by tqdm).
 - Extensive test coverage via pytest
 - Flexible column name handling
 - Support for various gene ID formats (requires mapping file for non-HGNC IDs)
-- Performance optimizations using Polars, NumPy, and Numba
+- Performance optimisations using Polars, NumPy, and Numba
 - Parallel processing support
 
 ## Installation
@@ -52,7 +52,7 @@ pip install -e ".[dev]"
 ```python
 from ithraa import GeneSetEnrichmentPipeline
 
-# Initialize the pipeline
+# Initialise the pipeline
 pipeline = GeneSetEnrichmentPipeline(
     pipeline_dir="path/to/output",
     valid_genes_file="path/to/valid_genes.txt",
@@ -176,7 +176,7 @@ GENE2            no
    - More flexible input file handling
 
 3. **Performance**
-   - Vectorized operations using NumPy and Polars
+   - Vectorised operations using NumPy and Polars
    - Parallel processing capabilities
    - Memory-efficient data structures
 

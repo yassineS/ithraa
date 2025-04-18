@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--gene-set",
         type=str,
-        help="Name of the gene set to visualize (without path or extension)"
+        help="Name of the gene set to visualise (without path or extension)"
     )
     
     parser.add_argument(
@@ -325,9 +325,9 @@ def plot_heatmap(results_df, output_path, gene_set=None, metric='EnrichmentRatio
     # Create figure
     plt.figure(figsize=figsize)
     
-    # Set up custom colormap based on the metric
+    # Set up custom colourmap based on the metric
     if metric == 'EnrichmentRatio':
-        # Blue-white-red colormap for enrichment ratio (centered at 1.0)
+        # Blue-white-red colourmap for enrichment ratio (centered at 1.0)
         cmap = LinearSegmentedColormap.from_list('custom_diverging', 
                                                [(0, '#3b4cc0'), (0.5, 'white'), (1.0, '#b40426')])
         vmin = min(0.5, pivot_df.values.min())
@@ -340,10 +340,10 @@ def plot_heatmap(results_df, output_path, gene_set=None, metric='EnrichmentRatio
         sig_mask = sig_mask.sort_index(ascending=False)
         
     else:  # P-value
-        # White-blue colormap for p-values
-        cmap = 'Blues_r'  # Reversed Blues colormap (darker = smaller p-value)
+        # White-blue colourmap for p-values
+        cmap = 'Blues_r'  # Reversed Blues colourmap (darker = smaller p-value)
         vmin = 0
-        vmax = 0.2  # Cap at 0.2 for better color resolution at significant values
+        vmax = 0.2  # Cap at 0.2 for better colour resolution at significant values
         vcenter = None
         cbar_label = "P-value"
         sig_mask = None
@@ -362,7 +362,7 @@ def plot_heatmap(results_df, output_path, gene_set=None, metric='EnrichmentRatio
                             ha='center', va='center', color='black',
                             fontsize=15, fontweight='bold')
     
-    # Customize the plot
+    # Customise the plot
     ax.set_xlabel('Population', fontsize=14, fontweight='bold')
     ax.set_ylabel('Rank Threshold', fontsize=14, fontweight='bold')
     

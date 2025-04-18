@@ -11,7 +11,7 @@ class PipelineConfig:
     """Configuration class for the gene set enrichment pipeline."""
 
     def __init__(self, config_path: str):
-        """Initialize the configuration from a TOML file.
+        """Initialise the configuration from a TOML file.
 
         Args:
             config_path: Path to the TOML configuration file

@@ -74,7 +74,7 @@ def run_pipeline():
         print(f"Saved filtered config to: {temp_config_path}")
         
         # Now run the pipeline with the modified config
-        print("Initializing pipeline with filtered configuration...")
+        print("Initialising pipeline with filtered configuration...")
         pipeline = GeneSetEnrichmentPipeline(str(temp_config_path))
         
         # Run the pipeline

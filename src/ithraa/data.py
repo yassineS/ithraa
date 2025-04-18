@@ -9,7 +9,7 @@ import numpy as np  # Use standard NumPy instead of Numba's NumPy API
 from pathlib import Path
 import logging
 
-# Import the optimized pairwise distance calculator from stats.py
+# Import the optimised pairwise distance calculator from stats.py
 from ithraa.stats import _calculate_pairwise_distances
 
 # Helper function for factor matching with parallel capabilities
@@ -302,7 +302,7 @@ def compute_gene_distances(gene_coords: pl.DataFrame) -> pl.DataFrame:
         starts = genes['start'].to_numpy()
         ends = genes['end'].to_numpy()
         
-        # Use the numba-optimized function for calculating pairwise distances
+        # Use the numba-optimised function for calculating pairwise distances
         # The function returns lists rather than NumPy arrays
         idx1, idx2, distances = _calculate_pairwise_distances(
             np.arange(n_genes, dtype=np.int64), 

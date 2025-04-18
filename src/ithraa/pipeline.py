@@ -147,7 +147,7 @@ def _perform_permutation(
     
     return iter_results
 
-# Helper functions for optimized threshold processing
+# Helper functions for optimised threshold processing
 def _process_threshold(
     threshold: int,
     processed_genes: pl.DataFrame,
@@ -305,7 +305,7 @@ class GeneSetEnrichmentPipeline:
     """Main class for running gene set enrichment analysis."""
 
     def __init__(self, config_path: str):
-        """Initialize the pipeline with a configuration file.
+        """Initialise the pipeline with a configuration file.
 
         Args:
             config_path: Path to the TOML configuration file
@@ -830,7 +830,7 @@ class GeneSetEnrichmentPipeline:
             
             f.write("## How to Use These Results\n\n")
             f.write("### Plotting\n\n")
-            f.write("You can use the included plot_results.py script to visualize these results:\n\n")
+            f.write("You can use the included plot_results.py script to visualise these results:\n\n")
             f.write("```bash\n")
             f.write(f"python plot_results.py --results-dir {output_dir} --gene-set \"{Path(self.config.input_files[gene_set_key]).stem}\"\n")
             f.write("```\n")

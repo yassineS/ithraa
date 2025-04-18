@@ -27,7 +27,7 @@ def setup_logging(log_dir=None, level=logging.INFO):
         root_logger = logging.getLogger()
         root_logger.setLevel(level)
         root_logger.addHandler(file_handler)
-        root_logger.info("Logging initialized")
+        root_logger.info("Logging Initialised")
     
     # Always add a console handler
     console_handler = logging.StreamHandler()

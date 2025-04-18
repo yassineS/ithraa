@@ -206,7 +206,7 @@ def main():
         dump(config, f)
     
     try:
-        # Initialize and run pipeline
+        # Initialise and run pipeline
         pipeline = GeneSetEnrichmentPipeline(str(temp_config_path))
         pipeline.run()
         logging.info("Pipeline execution completed successfully")

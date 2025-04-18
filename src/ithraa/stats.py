@@ -12,17 +12,17 @@ from scipy import stats
 import statsmodels.api as sm
 from statsmodels.stats.multitest import multipletests
 
-# Core numba-optimized functions for inner loops and heavy calculations
+# Core numba-optimised functions for inner loops and heavy calculations
 
 # Simplified versions for better compatibility
 @nb.njit
 def _abs_vec(x):
-    """Optimized absolute value using Numba"""
+    """Optimised absolute value using Numba"""
     return -x if x < 0 else x
 
 @nb.njit
 def _sqrt_vec(x):
-    """Optimized square root using Numba"""
+    """Optimised square root using Numba"""
     return x ** 0.5
 
 @nb.njit(parallel=True)
