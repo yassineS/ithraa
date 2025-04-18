@@ -23,6 +23,7 @@ __pycache__
 *nix
 .vscode
 
+build/
 results/
 plots/
 example/temp_config.toml
