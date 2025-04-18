@@ -1,18 +1,25 @@
-# Gene Set Enrichment Pipeline
+# Ithraa: A Gene Set Enrichment Pipeline
+A gene set enrichment (GSE) pipeline, providing tools for gene set enrichment analysis, bootstrap testing, and control for confounding factors when gene matching to perform False Discovery Rate (FDR) estimation.
 
-A modern Python implementation of the Gene Set Enrichment Pipeline, providing tools for gene set enrichment analysis, bootstrap testing, and control for confounding factors.
+This is largely based on David Enard's pipeline: [https://github.com/DavidPierreEnard/Gene_Set_Enrichment_Pipeline/](https://github.com/DavidPierreEnard/Gene_Set_Enrichment_Pipeline/)
+
+The name إثراء (ʾithrāʾ) means enrichment in arabic (inspired by tqdm).
 
 ## Features
 
 - Gene set enrichment analysis with flexible input formats
 - Bootstrap testing for statistical significance
-- Control for confounding factors
+- Control for confounding factors during FDR estimation using gene matching
 - Modern Python implementation with type hints and comprehensive documentation
-- Extensive test coverage
+- Extensive test coverage via pytest
 - Flexible column name handling
-- Support for various gene ID formats
+- Support for various gene ID formats (requires mapping file for non-HGNC IDs)
+- Performance optimizations using Polars, NumPy, and Numba
+- Parallel processing support
 
 ## Installation
+
+We recommend using `uv` for faster dependency management.
 
 ```sh
 # Install uv if not already installed
@@ -22,7 +29,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/yourusername/gse_pipeline.git
 cd gse_pipeline
 
-# Install the package
+# Create a virtual environment and install the package
+uv venv
 uv pip install -e .
 ```
 
@@ -204,9 +212,9 @@ If you use this software in your research, please cite:
 ```bibtex
 @software{gse_pipeline,
   title = {Gene Set Enrichment Pipeline},
-  author = {Your Name},
-  year = {2024},
+  author = {Yassine Souilmi},
+  year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/yourusername/gse_pipeline}
+  url = {https://github.com/yourusername/ithraa}
 }
-``` 
+```
