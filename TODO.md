@@ -18,7 +18,6 @@
 - [ ] Example data.
 - [ ] Testing vs. perl.
 - [ ] Remove unused imports.
-- [ ] Entirely replace numpy.
 - [x] Check and clean parameters that don't do anything anymore:
 	- [x] fdr.interrupted.
 	- [x] fdr.shuffling_segments.
