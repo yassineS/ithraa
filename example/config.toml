@@ -31,7 +31,6 @@ num_threads = 6 # Number of threads to use for parallel processing
 run = true
 iterations = 10
 runs = 10  # Number of bootstrap runs to perform
-simultaneous_runs = 25
 
 # FDR parameters
 [fdr]

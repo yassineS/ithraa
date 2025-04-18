@@ -111,11 +111,6 @@ def parse_args():
         type=int,
         help="Override number of bootstrap iterations"
     )
-    bootstrap_group.add_argument(
-        "--simultaneous-runs",
-        type=int,
-        help="Override number of simultaneous runs"
-    )
     
     # FDR parameter overrides
     fdr_group = parser.add_argument_group("FDR parameter overrides")
@@ -171,8 +166,6 @@ def update_config(config: dict, args: argparse.Namespace):
         config['bootstrap']['run'] = False
     if args.bootstrap_iterations:
         config['bootstrap']['iterations'] = args.bootstrap_iterations
-    if args.simultaneous_runs:
-        config['bootstrap']['simultaneous_runs'] = args.simultaneous_runs
     
     # FDR parameter overrides
     if args.no_fdr:
