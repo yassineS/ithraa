@@ -3,9 +3,11 @@
 import logging
 import multiprocessing
 import os
+import sys
+import platform
 from pathlib import Path
 import time
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Dict, List, Optional, Any
 import json
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -13,7 +15,18 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import polars as pl
 import numba as nb
 import numpy as np  # Use standard numpy instead of Numba's numpy API
-from tqdm import tqdm
+from tqdm.auto import tqdm
+
+# Configure tqdm to work properly on macOS
+is_mac = platform.system() == 'Darwin'
+tqdm_kwargs = {
+    'position': 0, 
+    'leave': True, 
+    'ncols': 100, 
+    'dynamic_ncols': True,  # Allow tqdm to adjust the width dynamically
+    'ascii': is_mac,        # Use ASCII characters on macOS for better terminal compatibility
+    'disable': False,       # Never disable the progress bar
+}
 
 from .config import PipelineConfig
 from .data import (
@@ -23,20 +36,16 @@ from .data import (
     load_factors, 
     load_valid_genes,
     load_hgnc_mapping,
-    filter_genes,
     compute_gene_distances,
     process_gene_set,
     find_control_genes,
     match_confounding_factors,
-    shuffle_genome,
     shuffle_genome_circular
 )
 from .stats import (
     calculate_enrichment,
     perform_fdr_analysis,
     bootstrap_analysis,
-    control_for_confounders,
-    compute_enrichment_score,
     calculate_significance
 )
 from .utils import ensure_dir
@@ -440,8 +449,7 @@ class GeneSetEnrichmentPipeline:
                     total = len(futures)
                     failed_thresholds = []
                     
-                    with tqdm(total=total, desc="Processing thresholds", unit="threshold", 
-                            position=0, leave=True, ncols=100) as pbar:
+                    with tqdm(total=total, desc="Processing thresholds", unit="threshold", **tqdm_kwargs) as pbar:
                         for future in as_completed(futures):
                             threshold = futures[future]
                             try:
@@ -547,8 +555,7 @@ class GeneSetEnrichmentPipeline:
         self.logger.info("Running threshold processing sequentially")
         
         # Process each threshold sequentially with a progress bar
-        with tqdm(total=len(rank_thresholds), desc="Processing thresholds", unit="threshold",
-                position=0, leave=True, ncols=100) as pbar:
+        with tqdm(total=len(rank_thresholds), desc="Processing thresholds", unit="threshold", **tqdm_kwargs) as pbar:
             for threshold in rank_thresholds:
                 try:
                     # Process this threshold
@@ -640,14 +647,16 @@ class GeneSetEnrichmentPipeline:
             # Use process-based pool for true parallelism
             with multiprocessing.get_context('spawn').Pool(processes=num_threads) as pool:
                 # Use imap_unordered for better performance with progress bar
-                with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", position=0, leave=True, ncols=100, smoothing=0.1) as pbar:
+                with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", 
+                         **tqdm_kwargs, miniters=1, mininterval=0.25) as pbar:
                     for i, result in enumerate(pool.imap_unordered(permute_func, range(fdr_iterations))):
                         permutation_results.append(result)
                         pbar.update(1)
                         pbar.refresh()
         else:
             # Fallback to sequential execution if only one thread is requested
-            with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", position=0, leave=True, ncols=100, smoothing=0.1) as pbar:
+            with tqdm(total=fdr_iterations, desc="FDR Permutations", unit="iteration", 
+                     **tqdm_kwargs, miniters=1, mininterval=0.25) as pbar:
                 for i in range(fdr_iterations):
                     result = permute_func(i)
                     permutation_results.append(result)

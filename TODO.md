@@ -1,4 +1,4 @@
-### TODO list for the project
+## TODO list for the project
 
 ### FEATURES
 - [ ] Github pages.
@@ -17,8 +17,10 @@
 - [ ] Documentation.
 - [ ] Example data.
 - [ ] Testing vs. perl.
-- [ ] Check and clean parameters that don't do anything anymore:
+- [ ] Remove unused imports.
+- [ ] Entirely replace numpy.
+- [x] Check and clean parameters that don't do anything anymore:
 	- [x] fdr.interrupted.
 	- [x] fdr.shuffling_segments.
 	- [x] bootstrap.runs.
-	- [ ] bootstrap.simultaneous_runs.
+	- [x] bootstrap.simultaneous_runs.
