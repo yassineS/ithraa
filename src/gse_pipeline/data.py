@@ -12,6 +12,47 @@ import logging
 # Import the optimized pairwise distance calculator from stats.py
 from .stats import _calculate_pairwise_distances
 
+# Define a guvectorize function for factor matching to increase performance
+@nb.guvectorize(
+    [(nb.float64[:], nb.float64[:], nb.float64, nb.boolean_[:])],
+    '(n),(n),()->()',
+    nopython=True
+)
+def _match_gene_factors(target_factors, control_factors, tolerance, result):
+    """
+    Match a single target gene with a single control gene based on factors.
+    This is a guvectorize function that can operate on arrays of genes.
+    
+    Args:
+        target_factors: Factor values for a target gene
+        control_factors: Factor values for a control gene
+        tolerance: Maximum allowed relative difference
+        result: Output result (True if all factors match within tolerance)
+    """
+    result[0] = True
+    for i in range(len(target_factors)):
+        target_val = target_factors[i]
+        control_val = control_factors[i]
+        
+        # Calculate relative difference
+        if abs(target_val) > 1e-10:
+            relative_diff = abs(target_val - control_val) / abs(target_val)
+        else:
+            relative_diff = abs(control_val) > 1e-10
+        
+        # If any factor is outside tolerance, this is not a match
+        if relative_diff > tolerance:
+            result[0] = False
+            break
+
+# Vector operation for computing gene lengths efficiently
+@nb.vectorize(['int64(int64, int64)'], nopython=True)
+def _compute_gene_lengths(start, end):
+    """
+    Compute gene lengths using vectorized operation.
+    """
+    return end - start
+
 def load_gene_list(
     file_path: Path, 
     selected_population: Optional[Union[str, List[str]]] = None
@@ -362,54 +403,6 @@ def find_control_genes(
     
     return pl.DataFrame({'gene_id': list(control_genes)})
 
-@nb.njit(parallel=True)
-def _find_matching_factors(
-    target_values, 
-    control_values,
-    tolerance: float
-):
-    """
-    Find control genes that match target genes based on confounding factors.
-    Uses parallelized operations for better performance.
-    
-    Args:
-        target_values: 2D array where each row is the factor values for a target gene
-        control_values: 2D array where each row is the factor values for a control gene
-        tolerance: Maximum allowed relative difference
-        
-    Returns:
-        Array of indices of matching control genes for each target gene
-    """
-    n_targets = target_values.shape[0]
-    n_controls = control_values.shape[0]
-    n_factors = target_values.shape[1]
-    matches = np.zeros((n_targets, n_controls), dtype=np.bool_)
-    
-    # Initialize all matches to True
-    for i in range(n_targets):
-        for j in range(n_controls):
-            matches[i, j] = True
-    
-    # Check each factor for matches
-    for i in nb.prange(n_targets):
-        for j in range(n_controls):
-            for k in range(n_factors):
-                target_val = target_values[i, k]
-                control_val = control_values[j, k]
-                
-                # Calculate relative difference
-                if abs(target_val) > 1e-10:
-                    relative_diff = abs(target_val - control_val) / abs(target_val)
-                else:
-                    relative_diff = abs(control_val) > 1e-10
-                
-                # If any factor is outside tolerance, this is not a match
-                if relative_diff > tolerance:
-                    matches[i, j] = False
-                    break
-    
-    return matches
-
 def match_confounding_factors(
     target_genes: pl.DataFrame,
     control_genes: pl.DataFrame,
@@ -418,7 +411,7 @@ def match_confounding_factors(
 ) -> pl.DataFrame:
     """
     Match control genes to target genes based on confounding factors.
-    Uses Numba-accelerated functions for better performance.
+    Uses Numba-accelerated guvectorize function for better performance.
     
     Args:
         target_genes: DataFrame with target gene IDs
@@ -462,8 +455,40 @@ def match_confounding_factors(
     if len(target_values) == 0 or len(control_values) == 0:
         return pl.DataFrame(schema={'gene_id': pl.Utf8, **{col: pl.Float64 for col in factor_cols}})
     
-    # Find matches using numba-accelerated function
-    matches = _find_matching_factors(target_values, control_values, tolerance)
+    # Use our guvectorize function for matching
+    # Create a results matrix to store matching results
+    matches = np.zeros((len(target_values), len(control_values)), dtype=np.bool_)
+    
+    # For large datasets, use batched processing to avoid memory issues
+    batch_size = 1000
+    
+    if len(target_values) * len(control_values) < batch_size * batch_size:
+        # Small enough - process all at once
+        for i in range(len(target_values)):
+            # Apply guvectorize to compare this target gene with all control genes at once
+            results = np.zeros(len(control_values), dtype=np.bool_)
+            _match_gene_factors(
+                np.tile(target_values[i], (len(control_values), 1)), 
+                control_values, 
+                tolerance, 
+                results
+            )
+            matches[i] = results
+    else:
+        # Process in batches
+        for i in range(len(target_values)):
+            for j_batch in range(0, len(control_values), batch_size):
+                j_end = min(j_batch + batch_size, len(control_values))
+                batch = control_values[j_batch:j_end]
+                
+                results = np.zeros(len(batch), dtype=np.bool_)
+                _match_gene_factors(
+                    np.tile(target_values[i], (len(batch), 1)), 
+                    batch, 
+                    tolerance, 
+                    results
+                )
+                matches[i, j_batch:j_end] = results
     
     # Collect control genes that match any target gene
     matched_indices = set()
@@ -548,7 +573,10 @@ def shuffle_genome(gene_coords: pl.DataFrame, chrom_sizes: Dict[str, int]) -> pl
         
         # Get gene IDs and compute gene lengths
         gene_ids = chrom_genes['gene_id'].to_numpy()
-        gene_lengths = (chrom_genes['end'] - chrom_genes['start']).to_numpy()
+        gene_lengths = _compute_gene_lengths(
+            chrom_genes['start'].to_numpy(),
+            chrom_genes['end'].to_numpy()
+        )
         
         # Use Numba-accelerated function for shuffling
         starts, ends = _shuffle_gene_positions(gene_lengths, size)

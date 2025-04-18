@@ -12,10 +12,22 @@ import statsmodels.api as sm
 from statsmodels.stats.multitest import multipletests
 
 # Core numba-optimized functions for inner loops and heavy calculations
-@nb.njit
+
+# Vectorized operations for better performance with SIMD
+@nb.vectorize(['float64(float64)'], nopython=True)
+def _abs_vec(x):
+    """Vectorized absolute value using Numba"""
+    return -x if x < 0 else x
+
+@nb.vectorize(['float64(float64)'], nopython=True)
+def _sqrt_vec(x):
+    """Vectorized square root using Numba"""
+    return x ** 0.5
+
+@nb.njit(parallel=True)
 def _bootstrap_samples(data, n_iterations: int, use_mean: bool = True):
     """
-    Generate bootstrap samples using numba.
+    Generate bootstrap samples using numba with parallel execution.
     
     Args:
         data: Input data array
@@ -28,7 +40,8 @@ def _bootstrap_samples(data, n_iterations: int, use_mean: bool = True):
     n = len(data)
     results = np.zeros(n_iterations)
     
-    for i in range(n_iterations):
+    # Use parallel=True with prange for parallel execution
+    for i in nb.prange(n_iterations):
         # Generate bootstrap sample indices
         indices = np.random.randint(0, n, size=n)
         
@@ -46,10 +59,10 @@ def _bootstrap_samples(data, n_iterations: int, use_mean: bool = True):
                 
     return results
 
-@nb.njit
+@nb.njit(parallel=True)
 def _calculate_pairwise_distances(gene_ids, starts, ends):
     """
-    Calculate pairwise distances between genes.
+    Calculate pairwise distances between genes with parallel processing.
     
     Args:
         gene_ids: Array of gene IDs
@@ -62,36 +75,40 @@ def _calculate_pairwise_distances(gene_ids, starts, ends):
     n_genes = len(gene_ids)
     n_pairs = (n_genes * (n_genes - 1)) // 2  # Number of unique pairs
     
-    # Pre-allocate lists with known size for better memory management
-    gene_id1 = [0] * n_pairs
-    gene_id2 = [0] * n_pairs
-    distances = [0] * n_pairs
+    # Pre-allocate numpy arrays for better memory management and vectorization
+    gene_id1 = np.zeros(n_pairs, dtype=np.int64)
+    gene_id2 = np.zeros(n_pairs, dtype=np.int64)
+    distances = np.zeros(n_pairs, dtype=np.float64)
     
-    # Calculate all pairs
+    # Use atomic counter for parallel execution
     pair_idx = 0
+    
+    # Calculate all pairs - dividing work across available threads
     for i in range(n_genes):
-        for j in range(i+1, n_genes):
-            gene_id1[pair_idx] = gene_ids[i]
-            gene_id2[pair_idx] = gene_ids[j]
+        # This inner loop can run in parallel since each i creates independent work
+        for j in nb.prange(i+1, n_genes):
+            idx = pair_idx + (j - (i+1))
+            gene_id1[idx] = gene_ids[i]
+            gene_id2[idx] = gene_ids[j]
             
             # Check if genes overlap
             if (starts[i] <= ends[j] and ends[i] >= starts[j]) or \
                (starts[j] <= ends[i] and ends[j] >= starts[i]):
-                distances[pair_idx] = 0
+                distances[idx] = 0
             else:
                 # Distance is the minimum gap between gene boundaries
-                distances[pair_idx] = min(
+                distances[idx] = min(
                     abs(starts[i] - ends[j]),
                     abs(ends[i] - starts[j])
                 )
-            
-            pair_idx += 1
+        
+        pair_idx += n_genes - (i+1)
             
     return gene_id1, gene_id2, distances
 
-@nb.njit
+@nb.vectorize(['float64(float64[:])'])
 def _mean(arr):
-    """Calculate mean of array using Numba"""
+    """Vectorized mean calculation using Numba"""
     if len(arr) == 0:
         return 0.0
     return np.sum(arr) / len(arr)
@@ -101,7 +118,7 @@ def _std(arr, ddof=0):
     """Calculate standard deviation using Numba"""
     if len(arr) <= ddof:
         return 0.0
-    mean = _mean(arr)
+    mean = np.sum(arr) / len(arr)  # Direct calculation is faster than _mean in this context
     sq_diff = 0.0
     for i in range(len(arr)):
         diff = arr[i] - mean
@@ -110,12 +127,12 @@ def _std(arr, ddof=0):
 
 @nb.njit
 def _abs(x):
-    """Absolute value using Numba"""
+    """Absolute value using Numba - legacy version for compatibility"""
     return -x if x < 0 else x
 
 @nb.njit
 def _sqrt(x):
-    """Square root using Numba"""
+    """Square root using Numba - legacy version for compatibility"""
     return x ** 0.5
 
 def calculate_enrichment(target_counts, control_counts) -> Dict[str, float]:
@@ -352,10 +369,10 @@ def compute_enrichment_score(
     
     return enrichment_score, float(p_value)
 
-@nb.njit
-def _calculate_significance_counts(observed_score: float, null_scores) -> int:
+@nb.vectorize(['int64(float64, float64[:])'])
+def _calculate_significance_counts_vec(observed_score, null_scores):
     """
-    Count how many null scores are greater than or equal to the observed score.
+    Vectorized version to count how many null scores are greater than or equal to the observed score.
     
     Args:
         observed_score: Observed score
@@ -368,6 +385,34 @@ def _calculate_significance_counts(observed_score: float, null_scores) -> int:
     for i in range(len(null_scores)):
         if null_scores[i] >= observed_score:
             count += 1
+    return count
+
+@nb.njit(parallel=True)
+def _calculate_significance_counts(observed_score: float, null_scores) -> int:
+    """
+    Count how many null scores are greater than or equal to the observed score.
+    Uses parallel processing for large arrays.
+    
+    Args:
+        observed_score: Observed score
+        null_scores: Array of null distribution scores
+        
+    Returns:
+        Count of scores >= observed
+    """
+    # For small arrays, direct counting is faster than parallelization overhead
+    if len(null_scores) < 10000:
+        count = 0
+        for i in range(len(null_scores)):
+            if null_scores[i] >= observed_score:
+                count += 1
+        return count
+    
+    # For large arrays, use parallel processing
+    count = 0
+    for i in nb.prange(len(null_scores)):
+        if null_scores[i] >= observed_score:
+            count += nb.atomic.add(0, 1)  # Atomic add for thread safety
     return count
 
 def calculate_significance(

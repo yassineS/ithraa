@@ -15,9 +15,8 @@
 ### BUG FIXES and Core Functionality
 - [ ] Check if factors used properly in matching.
 - [ ] Documentation.
-- [ ] Example data.
+- [x] Example data.
 - [ ] Testing vs. perl.
-- [ ] Remove unused imports.
 - [x] Check and clean parameters that don't do anything anymore:
 	- [x] fdr.interrupted.
 	- [x] fdr.shuffling_segments.
