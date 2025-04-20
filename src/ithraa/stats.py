@@ -76,7 +76,7 @@ def _calculate_pairwise_distances(gene_ids, starts, ends):
     n_genes = len(gene_ids)
     n_pairs = (n_genes * (n_genes - 1)) // 2  # Number of unique pairs
     
-    # Pre-allocate numpy arrays for better memory management and vectorization
+    # Pre-allocate numpy arrays for better memory management and vectorisation
     gene_id1 = np.zeros(n_pairs, dtype=np.int64)
     gene_id2 = np.zeros(n_pairs, dtype=np.int64)
     distances = np.zeros(n_pairs, dtype=np.float64)
@@ -154,7 +154,7 @@ def _calculate_significance_counts(observed_score: float, null_scores) -> int:
     Returns:
         Count of scores >= observed
     """
-    # For small arrays, direct counting is faster than parallelization overhead
+    # For small arrays, direct counting is faster than parallelsation overhead
     if len(null_scores) < 10000:
         count = 0
         for i in range(len(null_scores)):
@@ -433,3 +433,217 @@ def calculate_significance(
     is_significant = bool(p_value <= alpha)
     
     return float(p_value), is_significant
+
+def match_genes_mahalanobis(
+    gene_set_data: pl.DataFrame,
+    all_genes_data: pl.DataFrame,
+    distance_col: str = "distance",
+    confounders: List[str] = None,
+    exclude_gene_ids: List[str] = None,
+    n_matches: int = 1
+) -> pl.DataFrame:
+    """
+    Match each gene in gene_set with other genes using Mahalanobis distance.
+    
+    The distance is calculated in a hyperspace defined by the negative distance
+    between genes and additional confounding factors. This allows finding control
+    genes that are similar to target genes in terms of both physical distance and
+    confounding factors.
+
+    Args:
+        gene_set_data: DataFrame containing genes to be matched (target genes)
+        all_genes_data: DataFrame containing all genes to match against (background)
+        distance_col: Column name containing the distance metric (will be negated)
+        confounders: List of column names to use as confounding factors
+        exclude_gene_ids: List of gene IDs to exclude from matching (e.g., the gene set itself)
+        n_matches: Number of matching genes to return per gene in gene_set
+
+    Returns:
+        DataFrame containing matched genes with their matching target gene IDs
+    """
+    if gene_set_data.height == 0 or all_genes_data.height == 0:
+        raise ValueError("Input data cannot be empty")
+
+    # Set default empty list if confounders is None
+    confounders = confounders or []
+    exclude_gene_ids = exclude_gene_ids or []
+
+    # Prepare features for distance calculation
+    feature_cols = confounders.copy()
+    
+    # Negate the distance column (for proper Mahalanobis calculation)
+    # We negate because smaller distances mean genes are closer/more similar
+    target_genes = gene_set_data.select(
+        [distance_col] + confounders
+    ).with_columns([
+        pl.col(distance_col).mul(-1).alias(f"neg_{distance_col}")
+    ])
+    
+    background_genes = all_genes_data.select(
+        ["gene_id", distance_col] + confounders
+    ).with_columns([
+        pl.col(distance_col).mul(-1).alias(f"neg_{distance_col}")
+    ])
+    
+    # Replace distance column with negated version
+    feature_cols.append(f"neg_{distance_col}")
+    
+    # Convert to numpy arrays for faster computation
+    target_features = target_genes.select(feature_cols).to_numpy()
+    background_features = background_genes.select(feature_cols).to_numpy()
+    background_ids = background_genes["gene_id"].to_numpy()
+    
+    # Calculate covariance matrix for Mahalanobis distance
+    # Use a regularised covariance estimation to ensure numerical stability
+    # Combine target and background for better estimation of covariance
+    all_features = np.vstack([target_features, background_features])
+    
+    # Calculate mean and covariance
+    mean_vector = np.mean(all_features, axis=0)
+    cov_matrix = np.cov(all_features, rowvar=False)
+    
+    # Add a small regularisation term to ensure the matrix is invertible
+    cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
+    
+    # Calculate inverse covariance matrix
+    try:
+        inv_cov = np.linalg.inv(cov_matrix)
+    except np.linalg.LinAlgError:
+        # Fallback to pseudoinverse if regular inverse fails
+        inv_cov = np.linalg.pinv(cov_matrix)
+    
+    # Prepare to store results
+    matched_genes = []
+    
+    # For each gene in gene_set, find n_matches closest genes by Mahalanobis distance
+    for i, target_gene_features in enumerate(target_features):
+        target_gene_id = gene_set_data["gene_id"][i]
+        
+        # Calculate Mahalanobis distances for all background genes
+        distances = []
+        valid_indices = []
+        
+        for j, bg_features in enumerate(background_features):
+            bg_id = background_ids[j]
+            
+            # Skip if this gene is in the exclude list or is the same as target
+            if bg_id in exclude_gene_ids or bg_id == target_gene_id:
+                continue
+                
+            # Calculate Mahalanobis distance
+            diff = bg_features - target_gene_features
+            mahala_dist = np.sqrt(diff @ inv_cov @ diff.T)
+            
+            distances.append(mahala_dist)
+            valid_indices.append(j)
+        
+        # Check if we found any valid matches
+        if not distances:
+            continue
+            
+        # Find indices of n_matches smallest distances
+        distances = np.array(distances)
+        valid_indices = np.array(valid_indices)
+        
+        if len(distances) <= n_matches:
+            best_indices = np.argsort(distances)
+        else:
+            best_indices = np.argpartition(distances, n_matches)[:n_matches]
+        
+        # Get the actual indices in the background genes
+        match_indices = valid_indices[best_indices]
+        
+        # Add matches to results
+        for match_idx in match_indices:
+            matched_gene_id = background_ids[match_idx]
+            matched_gene_row = background_genes.filter(pl.col("gene_id") == matched_gene_id).to_dicts()[0]
+            matched_gene_row["target_gene_id"] = target_gene_id
+            matched_gene_row["mahalanobis_distance"] = float(distances[np.where(valid_indices == match_idx)[0][0]])
+            matched_genes.append(matched_gene_row)
+    
+    # Convert results to DataFrame
+    if not matched_genes:
+        # Return empty DataFrame with expected columns if no matches found
+        return pl.DataFrame(schema={
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8, 
+            "mahalanobis_distance": pl.Float64,
+            **{col: all_genes_data[col].dtype for col in confounders + [distance_col]},
+            f"neg_{distance_col}": pl.Float64
+        })
+    
+    return pl.DataFrame(matched_genes)
+
+def visualise_gene_matching(
+    gene_set_data: pl.DataFrame,
+    matched_genes: pl.DataFrame,
+    method: str = "pca",
+    confounders: List[str] = None,
+    distance_col: str = "distance",
+    random_state: int = 42
+) -> Dict[str, np.ndarray]:
+    """
+    Generate visualisation data to compare gene set and matched genes.
+    
+    Args:
+        gene_set_data: DataFrame containing the target gene set
+        matched_genes: DataFrame containing matched genes (from match_genes_mahalanobis)
+        method: Visualisation method, either "pca" or "tsne"
+        confounders: List of confounder columns used for dimensionality reduction
+        distance_col: Column name containing the distance metric
+        random_state: Random seed for reproducibility
+        
+    Returns:
+        Dictionary with "coordinates", "labels", and "variance_explained" (for PCA only)
+    """
+    if gene_set_data.height == 0 or matched_genes.height == 0:
+        raise ValueError("Input data cannot be empty")
+        
+    # Set default empty list if confounders is None
+    confounders = confounders or []
+    
+    # Prepare features for dimensionality reduction
+    feature_cols = confounders.copy()
+    feature_cols.append(distance_col)
+    
+    # Create combined dataset with labels
+    target_genes = gene_set_data.select(feature_cols).with_columns(
+        pl.lit("target").alias("group")
+    )
+    
+    matched = matched_genes.select(feature_cols).with_columns(
+        pl.lit("matched").alias("group")
+    )
+    
+    combined_data = pl.concat([target_genes, matched])
+    
+    # Extract features and labels
+    features = combined_data.select(feature_cols).to_numpy()
+    labels = combined_data["group"].to_numpy()
+    
+    # Apply dimensionality reduction
+    if method.lower() == "pca":
+        from sklearn.decomposition import PCA
+        reducer = PCA(n_components=2, random_state=random_state)
+        components = reducer.fit_transform(features)
+        variance_explained = reducer.explained_variance_ratio_
+        
+        return {
+            "coordinates": components,
+            "labels": labels,
+            "variance_explained": variance_explained
+        }
+    
+    elif method.lower() == "tsne":
+        from sklearn.manifold import TSNE
+        reducer = TSNE(n_components=2, random_state=random_state)
+        components = reducer.fit_transform(features)
+        
+        return {
+            "coordinates": components,
+            "labels": labels,
+            "variance_explained": None
+        }
+    
+    else:
+        raise ValueError(f"Unknown visualisation method: {method}. Use 'pca' or 'tsne'.")
