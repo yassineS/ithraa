@@ -189,14 +189,36 @@ def _process_threshold(
     threshold_results = {}
     
     # Step 2: Identify target genes for this threshold
-    target_genes = processed_genes.join(
+    # First get all genes that are in the gene set
+    gene_set_genes = processed_genes.join(
         gene_set_df,
         on='gene_id',
         how='inner'
     )
     
-    if len(target_genes) > threshold:
-        thread_logger.debug(f"{log_prefix}Target gene set ({len(target_genes)}) exceeds threshold {threshold}. Using all available target genes.")
+    # Create a target gene set that respects the threshold by selecting top-ranked genes
+    # We'll do this for each population
+    population_target_dfs = []
+    for population in population_names:
+        # Sort genes by score for this population (descending order)
+        sorted_genes = gene_set_genes.sort(population, descending=True)
+        
+        # Take only the top 'threshold' number of genes
+        top_genes = sorted_genes.head(threshold)
+        
+        # Add to our list of population-specific target genes
+        population_target_dfs.append(top_genes)
+    
+    # Combine all population-specific target gene sets into one
+    if population_target_dfs:
+        # Use union to get unique genes across all population targets
+        all_targets = pl.concat(population_target_dfs).unique(subset=['gene_id'])
+        
+        # This becomes our target gene set for this threshold
+        target_genes = all_targets
+    else:
+        # Fallback to using all gene set genes (should not happen in normal operation)
+        target_genes = gene_set_genes
     
     thread_logger.debug(f"{log_prefix}Identified {len(target_genes)} target genes after filtering for threshold {threshold}")
     
@@ -211,31 +233,61 @@ def _process_threshold(
     )
     thread_logger.debug(f"{log_prefix}Found {len(control_genes)} potential control genes for threshold {threshold}")
     
+    # Check how many control genes are in processed dataset
+    control_genes_in_processed = processed_genes.join(
+        control_genes,
+        on='gene_id',
+        how='inner'
+    )
+    thread_logger.debug(f"{log_prefix}Control genes in processed dataset: {len(control_genes_in_processed)}")
+    
     # Step 5: Match control genes based on confounding factors
     matched_controls = match_confounding_factors(
         target_genes,
-        control_genes,
+        control_genes_in_processed,  # Use only control genes that are in processed set
         factors_df,
         tolerance=tolerance
     )
     thread_logger.debug(f"{log_prefix}Matched {len(matched_controls)} control genes for threshold {threshold}")
     
+    # We need to ensure we have control genes
+    if len(matched_controls) == 0:
+        thread_logger.warning(f"{log_prefix}No control genes matched for threshold {threshold}. Results may not be valid.")
+        # In this case, we'll proceed with empty control sets, which will result in NaN enrichment ratios
+    
     # Step 6: Perform enrichment analysis for each population
     for population in population_names:
         thread_logger.debug(f"{log_prefix}Analyzing population: {population} for threshold {threshold}")
         
-        # Get scores for target and control genes
+        # Get scores for target genes
         target_scores = processed_genes.join(
-            gene_set_df,
+            target_genes.select(['gene_id']),
             on='gene_id',
             how='inner'
         )[population].to_numpy()
         
-        control_scores = processed_genes.join(
-            matched_controls.select(['gene_id']),
-            on='gene_id',
-            how='inner'
-        )[population].to_numpy()
+        # Get scores for control genes - we need to ensure we first extract just the gene_id column
+        # This fix handles the case where matched_controls might have extra columns
+        if len(matched_controls) > 0:
+            # First make sure we're only using the gene_id column for the join
+            control_ids = matched_controls.select(['gene_id'])
+            
+            # Then join with the processed genes to get scores
+            control_genes_with_scores = processed_genes.join(
+                control_ids,
+                on='gene_id',
+                how='inner'
+            )
+            
+            # Extract the scores as a numpy array
+            control_scores = control_genes_with_scores[population].to_numpy()
+            
+            # Log the number of control genes with valid scores
+            thread_logger.debug(f"{log_prefix}Found {len(control_scores)} control genes with valid scores for population {population}")
+        else:
+            # If no control genes matched, use an empty array
+            control_scores = np.array([])
+            thread_logger.warning(f"{log_prefix}No control genes with scores for population {population}")
         
         # Calculate enrichment
         enrichment_stats = calculate_enrichment(target_scores, control_scores)
@@ -261,20 +313,32 @@ def _process_threshold(
         for population in population_names:
             # Get scores for target and control genes
             target_scores = processed_genes.join(
-                gene_set_df,
+                target_genes.select(['gene_id']),
                 on='gene_id',
                 how='inner'
             )[population].to_numpy()
             
-            control_scores = processed_genes.join(
-                matched_controls.select(['gene_id']),
-                on='gene_id',
-                how='inner'
-            )[population].to_numpy()
+            # Get control scores (same fix as above)
+            if len(matched_controls) > 0:
+                control_ids = matched_controls.select(['gene_id'])
+                control_genes_with_scores = processed_genes.join(
+                    control_ids,
+                    on='gene_id',
+                    how='inner'
+                )
+                control_scores = control_genes_with_scores[population].to_numpy()
+            else:
+                control_scores = np.array([])
             
-            # Run bootstrap analysis
-            population_results = []
-            for run_idx in range(bootstrap_runs):  # Configurable number of bootstrap runs
+            # FIXED: Aggregate bootstrap results across multiple runs
+            # Lists to collect all resampled values across all bootstrap runs
+            all_target_means = []
+            all_control_means = []
+            all_enrichment_ratios = []
+            all_target_minus_control = []
+            
+            # Run bootstrap analysis multiple times
+            for run_idx in range(bootstrap_runs):
                 # Resample target scores
                 target_bootstrap = bootstrap_analysis(
                     target_scores,
@@ -287,16 +351,43 @@ def _process_threshold(
                     n_iterations=bootstrap_iterations
                 )
                 
-                population_results.append({
-                    'target': target_bootstrap,
-                    'control': control_bootstrap,
-                    'enrichment_ratio': target_bootstrap['mean'] / control_bootstrap['mean'] 
-                        if control_bootstrap['mean'] != 0 else float('nan'),
-                    'target_minus_control': target_bootstrap['mean'] - control_bootstrap['mean'],
-                })
+                # Calculate enrichment ratio for this run
+                enrichment_ratio = target_bootstrap['mean'] / control_bootstrap['mean'] if control_bootstrap['mean'] != 0 else float('nan')
+                target_minus_control = target_bootstrap['mean'] - control_bootstrap['mean']
+                
+                # Collect results across all runs
+                all_target_means.append(target_bootstrap['mean'])
+                all_control_means.append(control_bootstrap['mean'])
+                all_enrichment_ratios.append(enrichment_ratio)
+                all_target_minus_control.append(target_minus_control)
+            
+            # Calculate aggregated statistics across all bootstrap runs
+            bootstrap_result = {
+                'target_mean': float(np.mean(all_target_means)),
+                'target_std': float(np.std(all_target_means)),
+                'control_mean': float(np.mean(all_control_means)),
+                'control_std': float(np.std(all_control_means)),
+                'enrichment_ratio': float(np.mean(all_enrichment_ratios)),
+                'enrichment_ratio_std': float(np.std(all_enrichment_ratios)),
+                'target_minus_control': float(np.mean(all_target_minus_control)),
+                'target_minus_control_std': float(np.std(all_target_minus_control)),
+                # Store detailed results from each run for reference
+                'runs': [
+                    {
+                        'target_mean': float(tm),
+                        'control_mean': float(cm),
+                        'enrichment_ratio': float(er),
+                        'target_minus_control': float(tmc)
+                    }
+                    for tm, cm, er, tmc in zip(
+                        all_target_means, all_control_means, 
+                        all_enrichment_ratios, all_target_minus_control
+                    )
+                ]
+            }
             
             # Add bootstrap results to the threshold results
-            threshold_results[population]['bootstrap'] = population_results
+            threshold_results[population]['bootstrap'] = bootstrap_result
     
     # Return a tuple of threshold and results for easier tracking in parallel processing        
     return {threshold: threshold_results}

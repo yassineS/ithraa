@@ -133,7 +133,7 @@ def load_gene_set(file_path: Path) -> pl.DataFrame:
         file_path: Path to gene set file
         
     Returns:
-        DataFrame with gene_id column
+        DataFrame with gene_id column containing only genes in the target set
     """
     df = pl.read_csv(
         file_path,
@@ -141,18 +141,30 @@ def load_gene_set(file_path: Path) -> pl.DataFrame:
         has_header=True
     )
     
-    # Check if this is the RSV format with 'gene_id' and 'rsv' columns
-    if 'rsv' in df.columns:
-        # Filter to include only genes marked as 'yes'
-        df = df.filter(pl.col('rsv') == 'yes')
-        # Keep only the gene_id column since we've already filtered
-        df = df.select(['gene_id'])
-    elif 'gene_set_name' not in df.columns:
-        # If neither expected format is found, just assume the first column is gene_id
-        # and keep only those genes (no filtering)
-        df = df.select([df.columns[0]]).rename({df.columns[0]: 'gene_id'})
+    # If there's only one column, assume it's a simple list of gene IDs
+    if len(df.columns) == 1:
+        return df.rename({df.columns[0]: 'gene_id'})
     
-    return df
+    # Make sure we have a gene_id column
+    if 'gene_id' not in df.columns:
+        df = df.rename({df.columns[0]: 'gene_id'})
+    
+    # Look for any column that might be the gene set designation column
+    # (columns other than gene_id that contain "yes" values)
+    potential_gene_set_cols = []
+    
+    for col in df.columns:
+        if col != 'gene_id' and 'yes' in df[col].to_list():
+            potential_gene_set_cols.append(col)
+    
+    if potential_gene_set_cols:
+        # Use the first column that has 'yes' values to filter the genes
+        filter_col = potential_gene_set_cols[0]
+        logging.info(f"Using column '{filter_col}' to filter gene set. Found {df.filter(pl.col(filter_col) == 'yes').height} genes marked as 'yes'.")
+        df = df.filter(pl.col(filter_col) == 'yes')
+    
+    # Return just the gene_id column
+    return df.select(['gene_id'])
 
 def load_gene_coords(file_path: Path) -> pl.DataFrame:
     """
