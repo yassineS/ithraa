@@ -3,11 +3,16 @@ Collection of functions to visualise outputs and diagnostics
 of the ithraa package modules performance.
 """
 
-from typing import List, Dict
+from typing import List, Dict, Union, Optional, Set
+from pathlib import Path
 
 import numpy as np
 import polars as pl
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
 
+from sklearn.preprocessing import StandardScaler
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
@@ -83,3 +88,291 @@ def visualise_gene_matching(
     
     else:
         raise ValueError(f"Unknown visualisation method: {method}. Use 'pca' or 'tsne'.")
+
+
+def create_comparison_plots(
+    gene_set_df: pl.DataFrame,
+    traditional_matches: pl.DataFrame,
+    mahalanobis_matches: pl.DataFrame,
+    factors_df: pl.DataFrame,
+    distances_df: pl.DataFrame,
+    output_dir: Path,
+    methods: List[str] = ["pca", "tsne"]
+) -> None:
+    """
+    Create comparison plots for different gene matching methods.
+
+    Args:
+        gene_set_df: DataFrame containing target genes
+        traditional_matches: DataFrame containing genes matched using traditional method
+        mahalanobis_matches: DataFrame containing genes matched using Mahalanobis distance
+        factors_df: DataFrame with confounding factors
+        distances_df: DataFrame with gene distances
+        output_dir: Directory to save plots
+        methods: List of dimensionality reduction methods to use ('pca', 'tsne')
+    """
+    # Get the confounding factor column names
+    factor_cols = [col for col in factors_df.columns if col != "gene_id"]
+    
+    # Create a dataset for visualisation
+    
+    # First, get all genes with factors
+    all_genes_with_factors = factors_df.clone()
+    
+    # Add a column for the matching type
+    all_genes_with_factors = all_genes_with_factors.with_columns(
+        pl.lit("All").alias("match_type")
+    )
+    
+    # Extract factors for gene set
+    gene_set_with_factors = gene_set_df.join(factors_df, on="gene_id", how="inner")
+    
+    # Extract factors for traditional matches
+    trad_matches_with_factors = traditional_matches.join(factors_df, on="gene_id", how="inner")
+    
+    # Check if mahalanobis_matches has any rows before processing
+    if mahalanobis_matches.height == 0:
+        print("Warning: No Mahalanobis matches to plot")
+        maha_matches_with_factors = pl.DataFrame(schema={"gene_id": pl.Utf8, "match_type": pl.Utf8, **{col: factors_df.schema[col] for col in factor_cols}})
+    else:
+        # Check if Mahalanobis matches already have factors
+        missing_factors = [col for col in factor_cols if col not in mahalanobis_matches.columns]
+        if missing_factors:
+            # Some factors are missing, so join with factors_df
+            maha_matches_with_factors = mahalanobis_matches.join(factors_df, on="gene_id", how="inner")
+        else:
+            # All factors already present
+            maha_matches_with_factors = mahalanobis_matches.clone()
+            
+        # Ensure match_type column is added correctly
+        if "match_type" in maha_matches_with_factors.columns:
+            # Column already exists, drop it first
+            maha_matches_with_factors = maha_matches_with_factors.drop("match_type")
+        
+        # Add the match_type column
+        maha_matches_with_factors = maha_matches_with_factors.with_columns(
+            pl.lit("Mahalanobis").alias("match_type")
+        )
+    
+    # Add a column for the matching type for target genes
+    gene_set_with_factors = gene_set_with_factors.with_columns(
+        pl.lit("Target").alias("match_type")
+    )
+    
+    trad_matches_with_factors = trad_matches_with_factors.with_columns(
+        pl.lit("Traditional").alias("match_type")
+    )
+    
+    # Make sure all datasets have the necessary columns with the same dtypes
+    needed_cols = ["gene_id", "match_type"]
+    for col in factor_cols:
+        needed_cols.append(col)
+        
+        # Make sure the data type is consistent across all dataframes
+        # Convert numeric columns to Float64 for consistency
+        if all_genes_with_factors.height > 0 and col in all_genes_with_factors.columns:
+            all_genes_with_factors = all_genes_with_factors.with_columns(
+                pl.col(col).cast(pl.Float64)
+            )
+            
+        if gene_set_with_factors.height > 0 and col in gene_set_with_factors.columns:
+            gene_set_with_factors = gene_set_with_factors.with_columns(
+                pl.col(col).cast(pl.Float64)
+            )
+            
+        if trad_matches_with_factors.height > 0 and col in trad_matches_with_factors.columns:
+            trad_matches_with_factors = trad_matches_with_factors.with_columns(
+                pl.col(col).cast(pl.Float64)
+            )
+            
+        if maha_matches_with_factors.height > 0 and col in maha_matches_with_factors.columns:
+            maha_matches_with_factors = maha_matches_with_factors.with_columns(
+                pl.col(col).cast(pl.Float64)
+            )
+    
+    # Select only the needed columns with consistent data types
+    all_genes_cols = [col for col in needed_cols if col in all_genes_with_factors.columns]
+    gene_set_cols = [col for col in needed_cols if col in gene_set_with_factors.columns]
+    trad_match_cols = [col for col in needed_cols if col in trad_matches_with_factors.columns]
+    maha_match_cols = [col for col in needed_cols if col in maha_matches_with_factors.columns]
+    
+    # Remove genes that are in the gene set, traditional matches, or mahalanobis matches from the all_genes dataset
+    # to avoid plotting them twice
+    gene_set_ids = set(gene_set_df["gene_id"].to_list())
+    trad_match_ids = set(traditional_matches["gene_id"].to_list()) if traditional_matches.height > 0 else set()
+    maha_match_ids = set(mahalanobis_matches["gene_id"].to_list()) if mahalanobis_matches.height > 0 else set()
+    
+    # Combine all ids to exclude
+    exclude_ids = gene_set_ids.union(trad_match_ids).union(maha_match_ids)
+    
+    # Filter all_genes to exclude genes that are already in other categories
+    all_genes_with_factors = all_genes_with_factors.filter(
+        ~pl.col("gene_id").is_in(list(exclude_ids))
+    )
+    print(f"Plotting {all_genes_with_factors.height} background genes in light grey")
+    
+    # Combine all datasets
+    all_data_parts = []
+    
+    # Add all genes first so they appear at the bottom of the plot
+    if all_genes_with_factors.height > 0 and len(all_genes_cols) > 0:
+        all_data_parts.append(all_genes_with_factors.select(all_genes_cols))
+    
+    # Then add the matches and targets
+    if trad_matches_with_factors.height > 0 and len(trad_match_cols) > 0:
+        all_data_parts.append(trad_matches_with_factors.select(trad_match_cols))
+        
+    if maha_matches_with_factors.height > 0 and len(maha_match_cols) > 0:
+        # Don't include mahalanobis_distance in the visualisation data
+        all_data_parts.append(maha_matches_with_factors.select(maha_match_cols))
+    
+    if gene_set_with_factors.height > 0 and len(gene_set_cols) > 0:
+        all_data_parts.append(gene_set_with_factors.select(gene_set_cols))
+    
+    # Check if we have any data to plot
+    if not all_data_parts:
+        print("No data to plot. Make sure at least one matching method returned results.")
+        return
+    
+    # Convert data types to ensure all dataframes are compatible before concatenation
+    for i in range(len(all_data_parts)):
+        for col in all_data_parts[i].columns:
+            if col != "gene_id" and col != "match_type":
+                all_data_parts[i] = all_data_parts[i].with_columns(
+                    pl.col(col).cast(pl.Float64)
+                )
+        
+    all_data = pl.concat(all_data_parts)
+    
+    # Create visualisations for PCA and t-SNE
+    for method in methods:
+        print(f"Creating {method} visualisation...")
+        # Get the feature columns for the plot
+        feature_cols = factor_cols.copy()
+        
+        # Standardise the data
+        features = all_data.select(feature_cols).to_numpy()
+        scaler = StandardScaler()
+        features_scaled = scaler.fit_transform(features)
+        
+        # Get visualisation results
+        if method == "pca":
+            reducer = PCA(n_components=2, random_state=42)
+            components = reducer.fit_transform(features_scaled)
+            variance_explained = reducer.explained_variance_ratio_
+            
+            viz_title = f"PCA Visualisation (Explained variance: {variance_explained[0]:.2f}, {variance_explained[1]:.2f})"
+        else:  # t-SNE
+            # Use a larger perplexity for the larger dataset, but not more than n_samples / 3
+            perplexity = min(50, features_scaled.shape[0] / 3)
+            reducer = TSNE(n_components=2, random_state=42, perplexity=perplexity)
+            components = reducer.fit_transform(features_scaled)
+            
+            viz_title = "t-SNE Visualisation"
+        
+        # Create the plot
+        plt.figure(figsize=(14, 10))
+        
+        # Define the colour palette with all genes in light grey
+        colors = {
+            "All": "#DDDDDD",  # Light grey for all genes
+            "Traditional": "#3366CC",  # Blue for traditional matches
+            "Mahalanobis": "#33CC66",  # Green for Mahalanobis matches
+            "Target": "#FF3333"  # Red for target genes
+        }
+        
+        # Define the marker sizes and alphas
+        sizes = {
+            "All": 15,  # Small size for background genes
+            "Traditional": 60,  # Medium size for traditional matches
+            "Mahalanobis": 60,  # Medium size for Mahalanobis matches
+            "Target": 100  # Large size for target genes
+        }
+        
+        alphas = {
+            "All": 0.3,  # More transparent for background genes
+            "Traditional": 0.7,
+            "Mahalanobis": 0.7,
+            "Target": 1.0  # Fully opaque for target genes
+        }
+        
+        # Create a DataFrame for easy plotting with seaborn
+        viz_df = pd.DataFrame({
+            "Component1": components[:, 0],
+            "Component2": components[:, 1],
+            "MatchType": all_data["match_type"].to_numpy(),
+            "GeneID": all_data["gene_id"].to_numpy(),
+        })
+        
+        # Plot each category separately to control size and alpha
+        for match_type, color in colors.items():
+            subset = viz_df[viz_df["MatchType"] == match_type]
+            if len(subset) > 0:
+                plt.scatter(
+                    x=subset["Component1"],
+                    y=subset["Component2"],
+                    c=color,
+                    s=sizes[match_type],
+                    alpha=alphas[match_type],
+                    label=f"{match_type} ({len(subset)} genes)",
+                    edgecolors='none'
+                )
+        
+        # Highlight target genes
+        target_points = viz_df[viz_df["MatchType"] == "Target"]
+        if len(target_points) > 0:
+            plt.scatter(
+                x=target_points["Component1"],
+                y=target_points["Component2"],
+                s=sizes["Target"] + 25,  # Slightly larger for the border
+                color='none',
+                edgecolor="black",
+                linewidth=1.5
+            )
+            
+            # Add gene labels for target genes
+            for _, row in target_points.iterrows():
+                plt.annotate(
+                    row["GeneID"],
+                    (row["Component1"], row["Component2"]),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7)
+                )
+        
+        plt.title(viz_title, fontsize=14)
+        plt.xlabel("Component 1", fontsize=12)
+        plt.ylabel("Component 2", fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.4)
+        plt.legend(loc="upper right", markerscale=0.7)
+        plt.tight_layout()
+        
+        # Save the plot
+        output_path = output_dir / f"gene_matching_comparison_{method.lower()}.png"
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        print(f"Saved {method} visualisation to {output_path}")
+        plt.close()
+
+
+def load_vip_gene_set(gene_set_path: Path) -> pl.DataFrame:
+    """
+    Load a virus interacting protein gene set file.
+    
+    Args:
+        gene_set_path: Path to the gene set file
+        
+    Returns:
+        DataFrame with gene IDs
+    """
+    if not gene_set_path or not Path(gene_set_path).exists():
+        raise FileNotFoundError(f"Gene set file not found: {gene_set_path}")
+    
+    # Load gene set file
+    with open(gene_set_path, 'r') as f:
+        gene_ids = [line.strip() for line in f if line.strip()]
+    
+    # Create a DataFrame with the gene IDs
+    gene_set_df = pl.DataFrame({"gene_id": gene_ids})
+    
+    return gene_set_df
