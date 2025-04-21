@@ -61,9 +61,26 @@ def parse_arguments():
         default=0.5, 
         help="Tolerance for traditional factor matching (default: 0.5)"
     )
+    parser.add_argument(
+        "--sd-threshold",
+        type=float,
+        default=1.0,
+        help="Standard deviation threshold for Mahalanobis matching (default: 1.0)"
+    )
+    parser.add_argument(
+        "--save-intermediate",
+        action="store_true",
+        help="Save intermediate candidate gene sets"
+    )
+    parser.add_argument(
+        "--intermediate-dir",
+        type=str,
+        default=None,
+        help="Directory to save intermediate files (default: results/intermediate_mahalanobis_TIMESTAMP)"
+    )
     return parser.parse_args()
 
-def setup_paths(gene_set_path=None):
+def setup_paths(gene_set_path=None, intermediate_dir=None):
     """Set up paths to data files in the example directory."""
     base_dir = Path(__file__).parent
     example_dir = base_dir / "example"
@@ -74,11 +91,13 @@ def setup_paths(gene_set_path=None):
         "factors": example_dir / "data" / "factors.txt",
         "valid_genes": example_dir / "data" / "valid_genes.txt",
         "output_dir": base_dir / "results" / "all_genes_comparison",
-        "gene_set": Path(gene_set_path) if gene_set_path else None
+        "gene_set": Path(gene_set_path) if gene_set_path else None,
+        "intermediate_dir": Path(intermediate_dir) if intermediate_dir else base_dir / "results" / "intermediate"
     }
     
-    # Create output directory if it doesn't exist
+    # Create output directories if they don't exist
     ensure_dir(paths["output_dir"])
+    ensure_dir(paths["intermediate_dir"])
     
     return paths
 
@@ -134,7 +153,7 @@ def main():
     np.random.seed(42)
     
     # Set up paths
-    paths = setup_paths(args.gene_set)
+    paths = setup_paths(args.gene_set, args.intermediate_dir)
     
     # Load data
     print("Loading data...")
@@ -163,32 +182,51 @@ def main():
     )
     print(f"Found {len(trad_matched_df)} traditional matches")
     
-    # Run Mahalanobis matching
-    print("Running Mahalanobis matching...")
+    # Run Mahalanobis matching with enhanced strategy
+    print("Running enhanced Mahalanobis matching...")
     # Get factor column names for Mahalanobis matching
     factor_cols = [col for col in factors_df.columns if col != "gene_id"]
     
-    # Add a default distance column to the factors dataframe
-    # This is needed for the Mahalanobis function which expects a distance column
-    factors_with_distance = factors_df.with_columns(pl.lit(0.0).alias("distance"))
+    # Join gene coordinates to add chromosome information
+    gene_coords_with_chr = gene_coords_df.select(["gene_id", "chrom"])
     
-    # Create a version of gene_set_df with the distance column and all factor columns
-    gene_set_with_factors = gene_set_df.join(
-        factors_df,
+    # Create a combined dataset with factors and chromosome info
+    combined_data = factors_df.join(
+        gene_coords_with_chr,
         on="gene_id",
         how="left"
-    ).with_columns(pl.lit(0.0).alias("distance"))
+    )
     
-    # Run Mahalanobis matching directly
+    # Add distance data to the combined dataset
+    combined_data = combined_data.with_columns(pl.lit(0.0).alias("distance"))
+    
+    # Create a version of gene_set_df with all needed columns
+    gene_set_with_data = gene_set_df.join(
+        combined_data,
+        on="gene_id",
+        how="left"
+    )
+    
+    # Run enhanced Mahalanobis matching
+    print(f"Using SD threshold of {args.sd_threshold} for candidate selection")
+    intermediate_dir = str(paths["intermediate_dir"]) if args.save_intermediate else None
+    
     maha_matched_df = match_genes_mahalanobis(
-        gene_set_with_factors,
-        factors_with_distance,
+        gene_set_with_data,
+        combined_data,
         distance_col="distance",
         confounders=factor_cols,
         exclude_gene_ids=set(gene_set_df["gene_id"].to_list()),
-        n_matches=1
+        n_matches=1,
+        sd_threshold=args.sd_threshold,
+        save_intermediate=args.save_intermediate,
+        intermediate_dir=intermediate_dir,
+        chr_col="chrom"  # Changed from "chromosome" to "chrom"
     )
     print(f"Found {len(maha_matched_df)} Mahalanobis matches")
+    
+    if args.save_intermediate:
+        print(f"Intermediate candidate files saved to {intermediate_dir}")
     
     # Create comparison plots using the visualise module
     print("Creating comparison plots...")
