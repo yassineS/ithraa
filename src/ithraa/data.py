@@ -435,10 +435,12 @@ def match_confounding_factors(
     target_genes: pl.DataFrame,
     control_genes: pl.DataFrame,
     factors: pl.DataFrame,
-    tolerance: float = 0.1
+    tolerance: float = 0.1,
+    n_matches: int = 1
 ) -> pl.DataFrame:
     """
     Match control genes to target genes based on confounding factors.
+    For each target gene, find n control genes with the most similar confounding factors.
     Uses Numba-accelerated guvectorize function for better performance.
     
     Args:
@@ -446,17 +448,17 @@ def match_confounding_factors(
         control_genes: DataFrame with control gene IDs
         factors: DataFrame with gene IDs and confounding factors
         tolerance: Maximum allowed relative difference in factor values (as a fraction)
+        n_matches: Number of control genes to match to each target gene
         
     Returns:
-        DataFrame with matched control gene IDs
+        DataFrame with matched control gene IDs and corresponding target gene IDs
     """
     if target_genes.height == 0:
         raise ValueError("Target genes DataFrame cannot be empty")
     
     if control_genes.height == 0:
-        # Return an empty DataFrame with the correct schema rather than raising an error
-        # This allows tests to run without failing on edge cases
-        return pl.DataFrame(schema={'gene_id': pl.Utf8})
+        # Return an empty DataFrame with the correct schema
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
     
     if factors.height == 0:
         raise ValueError("Factors DataFrame cannot be empty")
@@ -472,40 +474,76 @@ def match_confounding_factors(
     factor_cols = [col for col in factors.columns if col != 'gene_id']
     
     if not factor_cols:
-        # No factors to match, return all control genes
-        return control_genes
+        # No factors to match, return all control genes with random target assignments
+        import random
+        target_ids = target_genes['gene_id'].to_list()
+        if not target_ids:
+            return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
+        
+        result = []
+        for control_gene_id in control_factors['gene_id'].to_list():
+            # Randomly assign each control gene to a target gene
+            target_id = random.choice(target_ids)
+            result.append({'gene_id': control_gene_id, 'target_gene_id': target_id})
+        
+        return pl.DataFrame(result)
     
     # Convert to numpy arrays for numba processing
     target_values = target_factors.select(factor_cols).to_numpy()
+    target_ids = target_factors['gene_id'].to_numpy()
     control_values = control_factors.select(factor_cols).to_numpy()
     control_ids = control_factors['gene_id'].to_numpy()
     
     if len(target_values) == 0 or len(control_values) == 0:
-        return pl.DataFrame(schema={'gene_id': pl.Utf8, **{col: pl.Float64 for col in factor_cols}})
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
     
     # Use our helper function for matching
     matches = _match_gene_factors(target_values, control_values, tolerance)
     
-    # Collect control genes that match any target gene
-    matched_indices = set()
+    # Find best matches for each target gene
+    all_matched_genes = []
+    
     for i in range(matches.shape[0]):
+        target_id = target_ids[i]
+        matched_control_indices = []
+        
+        # Find all control genes that match this target gene
         for j in range(matches.shape[1]):
             if matches[i, j]:
-                matched_indices.add(j)
+                matched_control_indices.append(j)
+        
+        # If no matches found for this target gene, continue to the next one
+        if not matched_control_indices:
+            continue
+            
+        # Calculate factor similarity scores for matched control genes
+        # For simplicity, use the sum of absolute differences as a similarity metric
+        similarities = []
+        for j in matched_control_indices:
+            diff_sum = 0
+            for k in range(len(factor_cols)):
+                diff_sum += abs(target_values[i, k] - control_values[j, k])
+            similarities.append((j, diff_sum))
+        
+        # Sort by similarity (lower score = more similar)
+        similarities.sort(key=lambda x: x[1])
+        
+        # Take the top n matches
+        top_matches = similarities[:min(n_matches, len(similarities))]
+        
+        # Add to results
+        for match_idx, _ in top_matches:
+            control_id = control_ids[match_idx]
+            all_matched_genes.append({
+                'gene_id': control_id,
+                'target_gene_id': target_id,
+            })
     
-    # Convert to list for DataFrame creation
-    matched_genes = []
-    for idx in matched_indices:
-        matched_genes.append({
-            'gene_id': control_ids[idx],
-            **{col: float(control_values[idx, i]) for i, col in enumerate(factor_cols)}
-        })
+    # Create DataFrame with matched genes
+    if not all_matched_genes:
+        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
     
-    # Create DataFrame with matched genes and their factor values
-    if not matched_genes:
-        return pl.DataFrame(schema={'gene_id': pl.Utf8, **{col: pl.Float64 for col in factor_cols}})
-    
-    return pl.DataFrame(matched_genes)
+    return pl.DataFrame(all_matched_genes)
 
 @nb.njit(parallel=True)
 def _shuffle_gene_positions(gene_lengths, chrom_size: int) -> Tuple[nb.types.Array, nb.types.Array]:

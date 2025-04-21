@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 
 """
-Script to compare traditional gene matching with Mahalanobis distance-based matching.
+Script to compare traditional gene matching with Mahalanobis distance-based matching using all VIP genes.
 
 This script:
 1. Loads gene data and factor information
-2. Loads a virus interacting protein (VIP) gene set
+2. Loads a virus interacting protein (VIP) gene set (using all genes, not just a sample)
 3. Matches genes using both traditional and Mahalanobis distance methods
-4. Visualises the results using PCA and t-SNE
+4. Visualises the results using PCA and t-SNE, with connecting segments between target genes and matches
+5. Generates distribution plots for Mahalanobis and Euclidean distances
 
 Usage:
-    python compare_matching.py --gene-set path/to/gene_set
+    python compare_all_genes.py --gene-set path/to/gene_set
 """
 
-import os
-import random
 import argparse
 import numpy as np
 import polars as pl
@@ -35,24 +34,20 @@ from ithraa.stats import (
 )
 from ithraa.visualise import (
     create_comparison_plots,
-    load_vip_gene_set
+    load_vip_gene_set,
+    calculate_distances,
+    plot_distance_distributions
 )
 from ithraa.utils import ensure_dir
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Compare gene matching methods using a VIP gene set")
+    parser = argparse.ArgumentParser(description="Compare gene matching methods using ALL genes in a VIP gene set")
     parser.add_argument(
         "--gene-set", 
         type=str, 
-        default=None,
+        default="example/vips/temp_inter_coronaviruses_may2020",
         help="Path to the gene set file (e.g., example/vips/temp_inter_coronaviruses_may2020)"
-    )
-    parser.add_argument(
-        "--n-genes", 
-        type=int, 
-        default=10, 
-        help="Number of genes to sample from the gene set (default: 10)"
     )
     parser.add_argument(
         "--min-distance", 
@@ -63,8 +58,8 @@ def parse_arguments():
     parser.add_argument(
         "--tolerance", 
         type=float, 
-        default=0.2, 
-        help="Tolerance for traditional factor matching (default: 0.2)"
+        default=0.5, 
+        help="Tolerance for traditional factor matching (default: 0.5)"
     )
     return parser.parse_args()
 
@@ -78,7 +73,7 @@ def setup_paths(gene_set_path=None):
         "gene_coords": example_dir / "data" / "gene_coords_ensembl_v69.txt",
         "factors": example_dir / "data" / "factors.txt",
         "valid_genes": example_dir / "data" / "valid_genes.txt",
-        "output_dir": base_dir / "results" / "matching_comparison",
+        "output_dir": base_dir / "results" / "all_genes_comparison",
         "gene_set": Path(gene_set_path) if gene_set_path else None
     }
     
@@ -104,7 +99,6 @@ def load_data(paths):
         valid_genes = load_valid_genes(paths["valid_genes"])
     
     # Filter to keep only common genes across all datasets
-    # Since filter_common_genes doesn't exist, we'll implement the logic directly
     genes_with_coords = set(gene_coords_df["gene_id"].to_list())
     genes_with_factors = set(factors_df["gene_id"].to_list())
     
@@ -118,7 +112,7 @@ def load_data(paths):
     gene_coords_df = gene_coords_df.filter(pl.col("gene_id").is_in(common_genes))
     factors_df = factors_df.filter(pl.col("gene_id").is_in(common_genes))
     
-    # Load VIP gene set if provided
+    # Load VIP gene set
     gene_set_df = None
     if paths["gene_set"] and paths["gene_set"].exists():
         gene_set_df = load_vip_gene_set(paths["gene_set"])
@@ -126,36 +120,17 @@ def load_data(paths):
         gene_set_df = gene_set_df.filter(pl.col("gene_id").is_in(common_genes))
         print(f"Loaded {len(gene_set_df)} genes from VIP gene set {paths['gene_set'].name}")
     else:
-        # Fallback to using top 100 genes from the first population as before
-        print("No VIP gene set provided, using top 100 genes from the first population")
-        if len(populations) > 0:
-            population = populations[0]
-            gene_set_df = gene_list_df.sort(population, descending=True).head(100).select(["gene_id"])
-        else:
-            # If no populations found, just take the first 100 genes
-            gene_set_df = gene_list_df.head(100).select(["gene_id"])
+        raise ValueError("Gene set file is required")
     
     return gene_list_df, gene_coords_df, factors_df, gene_set_df, populations
 
 
-def select_random_genes(gene_set_df, n=10):
-    """Select n random genes from the gene set."""
-    genes = gene_set_df["gene_id"].to_list()
-    if len(genes) <= n:
-        return gene_set_df
-    
-    # Select random genes
-    selected_genes = random.sample(genes, n)
-    return gene_set_df.filter(pl.col("gene_id").is_in(selected_genes))
-
-
 def main():
-    """Main function to run the comparison."""
+    """Main function to run the comparison with all VIP genes."""
     # Parse command line arguments
     args = parse_arguments()
     
     # Set random seed for reproducibility
-    random.seed(42)
     np.random.seed(42)
     
     # Set up paths
@@ -166,13 +141,8 @@ def main():
     gene_list_df, gene_coords_df, factors_df, gene_set_df, populations = load_data(paths)
     print(f"Loaded {len(gene_list_df)} genes, {len(factors_df.columns)-1} factors, {len(gene_set_df)} genes in gene set")
     
-    # Select random subset of genes if needed
-    if args.n_genes < len(gene_set_df):
-        random_gene_set_df = select_random_genes(gene_set_df, n=args.n_genes)
-        print(f"Selected {len(random_gene_set_df)} random genes from the gene set")
-    else:
-        random_gene_set_df = gene_set_df
-        print(f"Using all {len(random_gene_set_df)} genes from the gene set (fewer than requested {args.n_genes})")
+    # Use all genes in the gene set
+    print(f"Using all {len(gene_set_df)} genes from the VIP gene set")
     
     # Compute pairwise distances between genes
     distances_df = compute_gene_distances(gene_coords_df)
@@ -180,12 +150,12 @@ def main():
     # Run traditional matching
     print("Running traditional matching...")
     # Find control genes (genes at least min_distance away from target genes)
-    control_genes_df = find_control_genes(random_gene_set_df, distances_df, min_distance=args.min_distance)
+    control_genes_df = find_control_genes(gene_set_df, distances_df, min_distance=args.min_distance)
     
     # Match control genes based on confounding factors
     # Use n_matches=1 to ensure one match per target gene
     trad_matched_df = match_confounding_factors(
-        random_gene_set_df,
+        gene_set_df,
         control_genes_df,
         factors_df,
         tolerance=args.tolerance,
@@ -202,9 +172,8 @@ def main():
     # This is needed for the Mahalanobis function which expects a distance column
     factors_with_distance = factors_df.with_columns(pl.lit(0.0).alias("distance"))
     
-    # Create a version of random_gene_set_df with the distance column and all factor columns
-    # First join the gene set with the factors to get all factor columns
-    random_gene_set_with_factors = random_gene_set_df.join(
+    # Create a version of gene_set_df with the distance column and all factor columns
+    gene_set_with_factors = gene_set_df.join(
         factors_df,
         on="gene_id",
         how="left"
@@ -212,11 +181,11 @@ def main():
     
     # Run Mahalanobis matching directly
     maha_matched_df = match_genes_mahalanobis(
-        random_gene_set_with_factors,
+        gene_set_with_factors,
         factors_with_distance,
         distance_col="distance",
         confounders=factor_cols,
-        exclude_gene_ids=set(random_gene_set_df["gene_id"].to_list()),
+        exclude_gene_ids=set(gene_set_df["gene_id"].to_list()),
         n_matches=1
     )
     print(f"Found {len(maha_matched_df)} Mahalanobis matches")
@@ -224,16 +193,29 @@ def main():
     # Create comparison plots using the visualise module
     print("Creating comparison plots...")
     create_comparison_plots(
-        random_gene_set_df,
+        gene_set_df,
         trad_matched_df,
         maha_matched_df,
         factors_df,
         distances_df,
         paths["output_dir"],
-        methods=["pca", "tsne"]
+        methods=["pca"]  # Focus on PCA for clarity when using all genes
     )
     
-    print("Comparison complete!")
+    # Calculate distances between targets and matches
+    print("Calculating distances between target genes and their matches...")
+    trad_distances = calculate_distances(gene_set_df, trad_matched_df, factors_df)
+    maha_distances = calculate_distances(gene_set_df, maha_matched_df, factors_df)
+    
+    # Plot distance distributions
+    print("Generating distance distribution plots...")
+    plot_distance_distributions(
+        trad_distances,
+        maha_distances,
+        paths["output_dir"]
+    )
+    
+    print("Comparison complete! Results saved to", paths["output_dir"])
 
 
 if __name__ == "__main__":

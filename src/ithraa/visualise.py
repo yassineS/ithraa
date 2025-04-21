@@ -128,7 +128,12 @@ def create_comparison_plots(
     gene_set_with_factors = gene_set_df.join(factors_df, on="gene_id", how="inner")
     
     # Extract factors for traditional matches
-    trad_matches_with_factors = traditional_matches.join(factors_df, on="gene_id", how="inner")
+    if "target_gene_id" in traditional_matches.columns:
+        # New format with target_gene_id column - just need gene_id for joining
+        trad_matches_with_factors = traditional_matches.join(factors_df, on="gene_id", how="inner")
+    else:
+        # Old format without target_gene_id column
+        trad_matches_with_factors = traditional_matches.join(factors_df, on="gene_id", how="inner")
     
     # Check if mahalanobis_matches has any rows before processing
     if mahalanobis_matches.height == 0:
@@ -340,6 +345,58 @@ def create_comparison_plots(
                     fontsize=8,
                     bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7)
                 )
+                
+            # Draw connecting segments between target genes and their matches
+            # Only if target_gene_id column exists in the matches DataFrames
+            if "target_gene_id" in traditional_matches.columns:
+                trad_points = viz_df[viz_df["MatchType"] == "Traditional"]
+                
+                # For each target gene, find its traditional match and draw a line
+                for _, target_row in target_points.iterrows():
+                    target_id = target_row["GeneID"]
+                    
+                    # Find the traditional match for this target gene - using proper Polars filtering
+                    trad_matches_for_target = traditional_matches.filter(pl.col("target_gene_id") == target_id)
+                    if trad_matches_for_target.height > 0:
+                        match_gene_ids = trad_matches_for_target["gene_id"].to_list()
+                        trad_match = trad_points[trad_points["GeneID"].isin(match_gene_ids)]
+                        
+                        if not trad_match.empty:
+                            # Draw a line from target to traditional match
+                            plt.plot(
+                                [target_row["Component1"], trad_match["Component1"].values[0]],
+                                [target_row["Component2"], trad_match["Component2"].values[0]],
+                                color=colors["Traditional"],
+                                linestyle='-',
+                                linewidth=0.7,
+                                alpha=0.6,
+                                zorder=1  # Draw lines below points
+                            )
+            
+            if "target_gene_id" in mahalanobis_matches.columns:
+                maha_points = viz_df[viz_df["MatchType"] == "Mahalanobis"]
+                
+                # For each target gene, find its Mahalanobis match and draw a line
+                for _, target_row in target_points.iterrows():
+                    target_id = target_row["GeneID"]
+                    
+                    # Find the Mahalanobis match for this target gene - using proper Polars filtering
+                    maha_matches_for_target = mahalanobis_matches.filter(pl.col("target_gene_id") == target_id)
+                    if maha_matches_for_target.height > 0:
+                        match_gene_ids = maha_matches_for_target["gene_id"].to_list()
+                        maha_match = maha_points[maha_points["GeneID"].isin(match_gene_ids)]
+                        
+                        if not maha_match.empty:
+                            # Draw a line from target to Mahalanobis match
+                            plt.plot(
+                                [target_row["Component1"], maha_match["Component1"].values[0]],
+                                [target_row["Component2"], maha_match["Component2"].values[0]],
+                                color=colors["Mahalanobis"],
+                                linestyle='-',
+                                linewidth=0.7,
+                                alpha=0.6,
+                                zorder=1  # Draw lines below points
+                            )
         
         plt.title(viz_title, fontsize=14)
         plt.xlabel("Component 1", fontsize=12)
@@ -363,16 +420,216 @@ def load_vip_gene_set(gene_set_path: Path) -> pl.DataFrame:
         gene_set_path: Path to the gene set file
         
     Returns:
-        DataFrame with gene IDs
+        DataFrame with gene IDs of interacting proteins
     """
     if not gene_set_path or not Path(gene_set_path).exists():
         raise FileNotFoundError(f"Gene set file not found: {gene_set_path}")
     
-    # Load gene set file
-    with open(gene_set_path, 'r') as f:
-        gene_ids = [line.strip() for line in f if line.strip()]
+    try:
+        # Try to load the file as a tab-separated file with a header
+        df = pl.read_csv(
+            gene_set_path,
+            separator='\t',
+            has_header=True,
+            ignore_errors=True
+        )
+        
+        # If there are at least two columns, look for 'yes' values
+        if len(df.columns) >= 2:
+            # Identify potential interaction columns (those containing 'yes' values)
+            potential_cols = []
+            for col in df.columns[1:]:  # Skip the first column (assumed to be gene_id)
+                if df[col].dtype == pl.Utf8 and 'yes' in df[col].to_list():
+                    potential_cols.append(col)
+            
+            if potential_cols:
+                # Use the first column with 'yes' values
+                interaction_col = potential_cols[0]
+                print(f"Found interaction column: {interaction_col}")
+                
+                # Filter to keep only genes with 'yes' in the interaction column
+                df = df.filter(pl.col(interaction_col) == 'yes')
+                
+                # If there's a column named 'gene_id', use that, otherwise use the first column
+                if 'gene_id' in df.columns:
+                    return df.select(['gene_id'])
+                else:
+                    return df.rename({df.columns[0]: 'gene_id'}).select(['gene_id'])
+        
+        # If we couldn't find interaction columns or if the file has only one column
+        # Assume the first column contains gene IDs
+        return df.rename({df.columns[0]: 'gene_id'}).select(['gene_id'])
+        
+    except Exception as e:
+        print(f"Error parsing the file as tab-separated: {e}")
+        print("Falling back to loading as a simple list of gene IDs")
+        
+        # Fallback to loading as a simple list of gene IDs
+        with open(gene_set_path, 'r') as f:
+            gene_ids = [line.strip() for line in f if line.strip()]
+        
+        # Create a DataFrame with the gene IDs
+        return pl.DataFrame({"gene_id": gene_ids})
+
+
+def calculate_distances(
+    gene_set_df: pl.DataFrame,
+    matched_df: pl.DataFrame,
+    factors_df: pl.DataFrame
+) -> pl.DataFrame:
+    """
+    Calculate both Mahalanobis and Euclidean distances between target genes and their matches.
     
-    # Create a DataFrame with the gene IDs
-    gene_set_df = pl.DataFrame({"gene_id": gene_ids})
+    Args:
+        gene_set_df: DataFrame containing target genes
+        matched_df: DataFrame containing matched genes with target_gene_id column
+        factors_df: DataFrame with confounding factors
+        
+    Returns:
+        DataFrame with gene_id, target_gene_id, mahalanobis_distance, euclidean_distance
+    """
+    from scipy.spatial.distance import euclidean, mahalanobis
+    from numpy.linalg import inv
     
-    return gene_set_df
+    if "target_gene_id" not in matched_df.columns:
+        raise ValueError("matched_df must have a target_gene_id column")
+    
+    # Get factor columns
+    factor_cols = [col for col in factors_df.columns if col != "gene_id"]
+    
+    # Add factors to target genes and matches
+    gene_set_with_factors = gene_set_df.join(factors_df, on="gene_id", how="inner")
+    matched_with_factors = matched_df.join(factors_df, on="gene_id", how="inner")
+    
+    # Calculate covariance matrix once for all calculations
+    all_genes_features = factors_df.select(factor_cols).to_numpy()
+    cov_matrix = np.cov(all_genes_features, rowvar=False)
+    
+    # Add a small regularization term to ensure the matrix is invertible
+    cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
+    
+    # Calculate inverse covariance matrix
+    try:
+        inv_cov = inv(cov_matrix)
+    except np.linalg.LinAlgError:
+        # Fallback to pseudoinverse if regular inverse fails
+        inv_cov = np.linalg.pinv(cov_matrix)
+    
+    # Prepare result containers
+    results = []
+    
+    # Calculate distances for each match
+    for match_row in matched_with_factors.to_dicts():
+        gene_id = match_row["gene_id"]
+        target_gene_id = match_row["target_gene_id"]
+        
+        # Get target gene factors
+        target_row = gene_set_with_factors.filter(pl.col("gene_id") == target_gene_id)
+        
+        if target_row.height == 0:
+            continue
+            
+        # Extract feature vectors
+        match_features = np.array([match_row[col] for col in factor_cols])
+        target_features = np.array([target_row[0, col] for col in factor_cols])
+        
+        # Calculate Mahalanobis distance
+        maha_dist = mahalanobis(match_features, target_features, inv_cov)
+        
+        # Calculate Euclidean distance
+        eucl_dist = euclidean(match_features, target_features)
+        
+        # Store results
+        results.append({
+            "gene_id": gene_id,
+            "target_gene_id": target_gene_id,
+            "mahalanobis_distance": float(maha_dist),
+            "euclidean_distance": float(eucl_dist)
+        })
+    
+    # Create DataFrame from results
+    if not results:
+        return pl.DataFrame(schema={
+            "gene_id": pl.Utf8, 
+            "target_gene_id": pl.Utf8, 
+            "mahalanobis_distance": pl.Float64, 
+            "euclidean_distance": pl.Float64
+        })
+        
+    return pl.DataFrame(results)
+
+
+def plot_distance_distributions(
+    traditional_distances: pl.DataFrame,
+    mahalanobis_distances: pl.DataFrame,
+    output_dir: Path
+) -> None:
+    """
+    Plot distributions of Mahalanobis and Euclidean distances for both matching methods.
+    
+    Args:
+        traditional_distances: DataFrame with distances for traditional matches
+        mahalanobis_distances: DataFrame with distances for Mahalanobis matches
+        output_dir: Directory to save plots
+    """
+    if traditional_distances.height == 0 and mahalanobis_distances.height == 0:
+        print("No distances to plot")
+        return
+        
+    # Plot Mahalanobis distances
+    plt.figure(figsize=(10, 6))
+    
+    # Set up the plot
+    plt.title("Distribution of Mahalanobis Distances", fontsize=14)
+    plt.xlabel("Mahalanobis Distance", fontsize=12)
+    plt.ylabel("Frequency", fontsize=12)
+    
+    # Plot the distributions
+    if traditional_distances.height > 0:
+        trad_distances = traditional_distances["mahalanobis_distance"].to_numpy()
+        plt.hist(trad_distances, alpha=0.6, label=f"Traditional (mean={np.mean(trad_distances):.2f})", 
+                 color="#3366CC", edgecolor="black", bins=20)
+    
+    if mahalanobis_distances.height > 0:
+        maha_distances = mahalanobis_distances["mahalanobis_distance"].to_numpy()
+        plt.hist(maha_distances, alpha=0.6, label=f"Mahalanobis (mean={np.mean(maha_distances):.2f})", 
+                 color="#33CC66", edgecolor="black", bins=20)
+    
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    mahalanobis_output_path = output_dir / "mahalanobis_distance_distribution.png"
+    plt.savefig(mahalanobis_output_path, dpi=300)
+    print(f"Saved Mahalanobis distance distribution to {mahalanobis_output_path}")
+    plt.close()
+    
+    # Plot Euclidean distances
+    plt.figure(figsize=(10, 6))
+    
+    # Set up the plot
+    plt.title("Distribution of Euclidean Distances", fontsize=14)
+    plt.xlabel("Euclidean Distance", fontsize=12)
+    plt.ylabel("Frequency", fontsize=12)
+    
+    # Plot the distributions
+    if traditional_distances.height > 0:
+        trad_distances = traditional_distances["euclidean_distance"].to_numpy()
+        plt.hist(trad_distances, alpha=0.6, label=f"Traditional (mean={np.mean(trad_distances):.2f})", 
+                 color="#3366CC", edgecolor="black", bins=20)
+    
+    if mahalanobis_distances.height > 0:
+        maha_distances = mahalanobis_distances["euclidean_distance"].to_numpy()
+        plt.hist(maha_distances, alpha=0.6, label=f"Mahalanobis (mean={np.mean(maha_distances):.2f})", 
+                 color="#33CC66", edgecolor="black", bins=20)
+    
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    # Save the plot
+    euclidean_output_path = output_dir / "euclidean_distance_distribution.png"
+    plt.savefig(euclidean_output_path, dpi=300)
+    print(f"Saved Euclidean distance distribution to {euclidean_output_path}")
+    plt.close()
