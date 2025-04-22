@@ -568,7 +568,7 @@ def match_genes_mahalanobis(
 
     # Process each target gene
     for target_idx, target_row in enumerate(target_gene_rows):
-        if target_idx % 10 == 0 and target_idx > 0:
+        if target_idx % 100 == 0 and target_idx > 0:
             print(f"Processed {target_idx} of {len(target_gene_rows)} target genes")
             
         target_id = target_row["gene_id"]
