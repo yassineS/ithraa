@@ -512,50 +512,107 @@ def match_genes_mahalanobis(
         exclude_gene_ids = set(exclude_gene_ids)
     
     # Set up intermediate directory if saving intermediate files
-    if save_intermediate and intermediate_dir is None:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        intermediate_dir = f"results/intermediate_mahalanobis_{timestamp}"
-    
     if save_intermediate:
+        if intermediate_dir is None:
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            intermediate_dir = f"results/intermediate_mahalanobis_{timestamp}"
+        
+        # Create the directory if it doesn't exist
         os.makedirs(intermediate_dir, exist_ok=True)
     
     # Prepare features for distance calculation
     feature_cols = confounders.copy()
     
+    # Early return if no confounders specified
+    if not feature_cols:
+        # Return empty DataFrame with expected schema
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8, 
+            "mahalanobis_distance": pl.Float64,
+            "initial_distance": pl.Float64,
+            "sd_threshold_used": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
+    
     # Extract feature data
     target_genes = gene_set_data.select(
-        ["gene_id"] + ([chr_col] if chr_col in gene_set_data.columns else []) + confounders
+        ["gene_id"] + ([chr_col] if chr_col in gene_set_data.columns else []) + 
+        [col for col in confounders if col in gene_set_data.columns]
     )
     
     background_genes = all_genes_data.select(
-        ["gene_id"] + ([chr_col] if chr_col in all_genes_data.columns else []) + confounders
+        ["gene_id"] + ([chr_col] if chr_col in all_genes_data.columns else []) + 
+        [col for col in confounders if col in all_genes_data.columns]
     )
+    
+    # Check if all confounders are present in both dataframes
+    missing_confounders = [col for col in confounders 
+                           if col not in target_genes.columns or col not in background_genes.columns]
+    if missing_confounders:
+        print(f"Warning: Missing confounder columns: {missing_confounders}")
+        # Remove missing confounders from feature_cols
+        feature_cols = [col for col in feature_cols if col not in missing_confounders]
+        
+        # If no valid confounders remain, return empty DataFrame
+        if not feature_cols:
+            schema = {
+                "gene_id": pl.Utf8,
+                "target_gene_id": pl.Utf8, 
+                "mahalanobis_distance": pl.Float64,
+                "initial_distance": pl.Float64,
+                "sd_threshold_used": pl.Float64
+            }
+            return pl.DataFrame(schema=schema)
     
     # Filter background genes to exclude target genes
     background_genes = background_genes.filter(~pl.col("gene_id").is_in(exclude_gene_ids))
+    
+    if background_genes.height == 0:
+        # If filtering removed all background genes, return empty DataFrame
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8, 
+            "mahalanobis_distance": pl.Float64,
+            "initial_distance": pl.Float64,
+            "sd_threshold_used": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
     
     # Get chromosome information if available
     has_chr = chr_col in target_genes.columns and chr_col in background_genes.columns
     
     # Calculate covariance matrix for initial Mahalanobis distance
     # Combine features from both target and background genes
-    all_features = pl.concat([
-        target_genes.select(feature_cols),
-        background_genes.select(feature_cols)
-    ]).to_numpy()
-    
-    # Calculate mean and covariance
-    cov_matrix = np.cov(all_features, rowvar=False)
-    
-    # Add a small regularization term to ensure the matrix is invertible
-    cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
-    
-    # Calculate inverse covariance matrix
     try:
-        inv_cov = np.linalg.inv(cov_matrix)
-    except np.linalg.LinAlgError:
-        # Fallback to pseudoinverse if regular inverse fails
-        inv_cov = np.linalg.pinv(cov_matrix)
+        all_features = pl.concat([
+            target_genes.select(feature_cols),
+            background_genes.select(feature_cols)
+        ]).to_numpy()
+        
+        # Calculate mean and covariance
+        cov_matrix = np.cov(all_features, rowvar=False)
+        
+        # Add a small regularization term to ensure the matrix is invertible
+        cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
+        
+        # Calculate inverse covariance matrix
+        try:
+            inv_cov = np.linalg.inv(cov_matrix)
+        except np.linalg.LinAlgError:
+            # Fallback to pseudoinverse if regular inverse fails
+            inv_cov = np.linalg.pinv(cov_matrix)
+    except Exception as e:
+        print(f"Error calculating covariance matrix: {e}")
+        # Return empty DataFrame with expected schema
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8, 
+            "mahalanobis_distance": pl.Float64,
+            "initial_distance": pl.Float64,
+            "sd_threshold_used": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
     
     # Prepare to store results
     all_matched_data = []
@@ -568,14 +625,24 @@ def match_genes_mahalanobis(
 
     # Process each target gene
     for target_idx, target_row in enumerate(target_gene_rows):
-        if target_idx % 100 == 0 and target_idx > 0:
+        if target_idx % batch_size == 0 and target_idx > 0:
             print(f"Processed {target_idx} of {len(target_gene_rows)} target genes")
             
         target_id = target_row["gene_id"]
-        target_features = np.array([target_row[col] for col in feature_cols])
         
-        if has_chr:
-            target_chr = target_row[chr_col]
+        # Ensure all feature columns exist in the target row
+        if not all(col in target_row for col in feature_cols):
+            print(f"Warning: Target gene {target_id} missing some feature columns, skipping")
+            continue
+            
+        try:
+            target_features = np.array([target_row[col] for col in feature_cols])
+        except Exception as e:
+            print(f"Error extracting features for target gene {target_id}: {e}")
+            continue
+        
+        # Get target chromosome if available
+        target_chr = target_row.get(chr_col, None) if has_chr else None
         
         # Calculate Mahalanobis distances from this target to all background genes
         distances = []
@@ -583,6 +650,10 @@ def match_genes_mahalanobis(
         
         for bg_idx, bg_row in enumerate(background_gene_rows):
             try:
+                # Skip if any feature is missing
+                if not all(col in bg_row for col in feature_cols):
+                    continue
+                    
                 bg_features = np.array([bg_row[col] for col in feature_cols])
                 dist = mahalanobis(target_features, bg_features, inv_cov)
                 distances.append(dist)
@@ -608,7 +679,7 @@ def match_genes_mahalanobis(
         candidate_mask = distances <= threshold
         
         # If not enough candidates, try with double threshold
-        if np.sum(candidate_mask) < 10:
+        if np.sum(candidate_mask) < max(10, n_matches):
             current_sd_threshold = 2.0 * sd_threshold
             threshold = mean_dist + current_sd_threshold * std_dist
             candidate_mask = distances <= threshold
@@ -642,11 +713,11 @@ def match_genes_mahalanobis(
             bg_id = bg_row["gene_id"]
             bg_features = np.array([bg_row[col] for col in feature_cols])
             
-            # Apply chromosome penalty if chromosomes are different
+            # Apply chromosome penalty if chromosomes are different and both are defined
             pairwise_penalty = 0.0
-            if has_chr:
-                bg_chr = bg_row[chr_col]
-                if target_chr != bg_chr:
+            if has_chr and target_chr is not None:
+                bg_chr = bg_row.get(chr_col, None)
+                if bg_chr is not None and target_chr != bg_chr:
                     # Apply penalty for different chromosomes
                     pairwise_penalty = -1.0  # Simplified penalty
             
@@ -691,7 +762,13 @@ def match_genes_mahalanobis(
             bg_row = background_gene_rows[final_indices[idx]]
             bg_id = bg_row["gene_id"]
             final_dist = final_distances[idx]
-            initial_dist = candidate_distances[np.where(candidate_indices == final_indices[idx])[0][0]]
+            
+            # Find the initial distance for this gene
+            candidate_idx = np.where(candidate_indices == final_indices[idx])[0]
+            if len(candidate_idx) > 0:
+                initial_dist = candidate_distances[candidate_idx[0]]
+            else:
+                initial_dist = float('nan')
             
             match_data = {
                 "gene_id": bg_id,

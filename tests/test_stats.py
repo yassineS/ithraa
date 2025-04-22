@@ -6,6 +6,9 @@ import numpy as np  # Use standard NumPy instead of Numba's NumPy
 import pandas as pd
 import polars as pl
 from scipy import stats
+import os
+import tempfile
+from pathlib import Path
 
 from ithraa.stats import (
     calculate_enrichment,
@@ -13,7 +16,8 @@ from ithraa.stats import (
     bootstrap_analysis,
     control_for_confounders,
     compute_enrichment_score,
-    calculate_significance
+    calculate_significance,
+    match_genes_mahalanobis
 )
 
 def test_calculate_enrichment():
@@ -205,3 +209,225 @@ def test_calculate_significance():
     observed_score = 0.3
     p_value, is_significant = calculate_significance(observed_score, null_scores)
     assert not is_significant
+
+def test_match_genes_mahalanobis():
+    """Test Mahalanobis gene matching function."""
+    import polars as pl
+    import numpy as np
+    import tempfile
+    from pathlib import Path
+    from ithraa.stats import match_genes_mahalanobis
+    
+    # Create test data
+    gene_set_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3'],
+        'chrom': ['chr1', 'chr2', 'chr3'],
+        'gc': [0.4, 0.5, 0.6],
+        'length': [1000, 2000, 3000]
+    })
+    
+    all_genes_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3', 'gene4', 'gene5', 'gene6'],
+        'chrom': ['chr1', 'chr2', 'chr3', 'chr1', 'chr2', 'chr3'],
+        'gc': [0.4, 0.5, 0.6, 0.41, 0.51, 0.61],
+        'length': [1000, 2000, 3000, 1050, 2050, 3050]
+    })
+
+    # Test with normal parameters
+    with tempfile.TemporaryDirectory() as temp_dir:
+        matches = match_genes_mahalanobis(
+            gene_set_data=gene_set_data,
+            all_genes_data=all_genes_data,
+            confounders=['gc', 'length'],
+            exclude_gene_ids=['gene1', 'gene2', 'gene3'],
+            n_matches=1,
+            sd_threshold=1.0,
+            save_intermediate=True,
+            intermediate_dir=temp_dir
+        )
+        
+        # Check if matches were found
+        assert matches.height == 3  # One match for each target gene
+        assert 'gene_id' in matches.columns
+        assert 'target_gene_id' in matches.columns
+        assert 'mahalanobis_distance' in matches.columns
+        
+        # Verify that excluded genes are not in matches
+        assert not any(gene_id in ['gene1', 'gene2', 'gene3'] for gene_id in matches['gene_id'])
+    
+    # Test with empty gene set
+    empty_gene_set = pl.DataFrame({
+        'gene_id': [],
+        'chrom': [],
+        'gc': [],
+        'length': []
+    })
+    
+    with pytest.raises(ValueError, match="Input data cannot be empty"):
+        match_genes_mahalanobis(
+            gene_set_data=empty_gene_set,
+            all_genes_data=all_genes_data,
+            confounders=['gc', 'length']
+        )
+    
+    # Test with empty background genes
+    empty_background = pl.DataFrame({
+        'gene_id': [],
+        'chrom': [],
+        'gc': [],
+        'length': []
+    })
+    
+    with pytest.raises(ValueError, match="Input data cannot be empty"):
+        match_genes_mahalanobis(
+            gene_set_data=gene_set_data,
+            all_genes_data=empty_background,
+            confounders=['gc', 'length']
+        )
+        
+    # Test with no confounders
+    no_confounder_matches = match_genes_mahalanobis(
+        gene_set_data=gene_set_data,
+        all_genes_data=all_genes_data,
+        confounders=[]
+    )
+    
+    # Should return empty DataFrame with expected schema
+    assert no_confounder_matches.height == 0
+    assert 'gene_id' in no_confounder_matches.columns
+    assert 'target_gene_id' in no_confounder_matches.columns
+    assert 'mahalanobis_distance' in no_confounder_matches.columns
+    
+    # Test with missing confounder columns
+    missing_conf_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3'],
+        'chrom': ['chr1', 'chr2', 'chr3'],
+        # Missing gc column
+        'length': [1000, 2000, 3000]
+    })
+    
+    # Should still work but print warning
+    matches = match_genes_mahalanobis(
+        gene_set_data=missing_conf_data,
+        all_genes_data=all_genes_data,
+        confounders=['gc', 'length']
+    )
+    
+    # Test with all background genes excluded
+    matches = match_genes_mahalanobis(
+        gene_set_data=gene_set_data,
+        all_genes_data=all_genes_data,
+        confounders=['gc', 'length'],
+        exclude_gene_ids=['gene1', 'gene2', 'gene3', 'gene4', 'gene5', 'gene6']
+    )
+    
+    # Should return empty DataFrame with expected schema
+    assert matches.height == 0
+    
+    # Test with different standard deviation threshold
+    with tempfile.TemporaryDirectory() as temp_dir:
+        matches_high_sd = match_genes_mahalanobis(
+            gene_set_data=gene_set_data,
+            all_genes_data=all_genes_data,
+            confounders=['gc', 'length'],
+            exclude_gene_ids=['gene1', 'gene2', 'gene3'],
+            n_matches=1,
+            sd_threshold=2.0,  # Higher threshold
+            save_intermediate=True,
+            intermediate_dir=temp_dir
+        )
+        
+        # With higher threshold, we should get matches for all genes
+        assert matches_high_sd.height == 3
+
+def test_match_genes_mahalanobis_edge_cases():
+    """Test edge cases for Mahalanobis gene matching function."""
+    import polars as pl
+    import numpy as np
+    import tempfile
+    from pathlib import Path
+    from ithraa.stats import match_genes_mahalanobis
+    
+    # Test with non-numeric columns
+    gene_set_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2'],
+        'chrom': ['chr1', 'chr2'],
+        'category': ['A', 'B'],  # Non-numeric column
+        'length': [1000, 2000]
+    })
+    
+    all_genes_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3', 'gene4'],
+        'chrom': ['chr1', 'chr2', 'chr1', 'chr2'],
+        'category': ['A', 'B', 'A', 'B'],  # Non-numeric column
+        'length': [1000, 2000, 1050, 2050]
+    })
+    
+    # Should work but ignore non-numeric columns
+    with tempfile.TemporaryDirectory() as temp_dir:
+        matches = match_genes_mahalanobis(
+            gene_set_data=gene_set_data,
+            all_genes_data=all_genes_data,
+            confounders=['length'],  # Only use numeric column
+            exclude_gene_ids=['gene1', 'gene2'],
+            n_matches=1,
+            save_intermediate=True,
+            intermediate_dir=temp_dir
+        )
+        
+        # Check if matches were found
+        assert matches.height == 2  # One match for each target gene
+    
+    # Test with singular covariance matrix (columns are perfectly correlated)
+    gene_set_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2'],
+        'chrom': ['chr1', 'chr2'],
+        'factor1': [1.0, 2.0],
+        'factor2': [2.0, 4.0]  # Exactly 2x factor1, will cause singularity
+    })
+    
+    all_genes_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3', 'gene4'],
+        'chrom': ['chr1', 'chr2', 'chr1', 'chr2'],
+        'factor1': [1.0, 2.0, 3.0, 4.0],
+        'factor2': [2.0, 4.0, 6.0, 8.0]  # Exactly 2x factor1, will cause singularity
+    })
+    
+    # Should use pseudoinverse instead of regular inverse
+    matches = match_genes_mahalanobis(
+        gene_set_data=gene_set_data,
+        all_genes_data=all_genes_data,
+        confounders=['factor1', 'factor2'],
+        exclude_gene_ids=['gene1', 'gene2'],
+        n_matches=1
+    )
+    
+    # Should still find matches using pseudoinverse
+    assert matches.height > 0
+    
+    # Test with zero variance in a feature
+    gene_set_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2'],
+        'chrom': ['chr1', 'chr2'],
+        'const_factor': [5.0, 5.0],  # Zero variance
+        'normal_factor': [1.0, 2.0]
+    })
+    
+    all_genes_data = pl.DataFrame({
+        'gene_id': ['gene1', 'gene2', 'gene3', 'gene4'],
+        'chrom': ['chr1', 'chr2', 'chr1', 'chr2'],
+        'const_factor': [5.0, 5.0, 5.0, 5.0],  # Zero variance
+        'normal_factor': [1.0, 2.0, 3.0, 4.0]
+    })
+    
+    # Should handle zero variance by adding regularization
+    matches = match_genes_mahalanobis(
+        gene_set_data=gene_set_data,
+        all_genes_data=all_genes_data,
+        confounders=['const_factor', 'normal_factor'],
+        exclude_gene_ids=['gene1', 'gene2'],
+        n_matches=1
+    )
+    
+    # Should still find matches
+    assert matches.height > 0
