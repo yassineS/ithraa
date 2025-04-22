@@ -38,7 +38,6 @@ from .data import (
     compute_gene_distances,
     process_gene_set,
     find_control_genes,
-    match_confounding_factors,
     shuffle_genome_circular
 )
 from ithraa.stats import (
@@ -149,248 +148,252 @@ def _perform_permutation(
 
 # Helper functions for optimised threshold processing
 def _process_threshold(
+    self,
+    pipeline_data: PipelineData,
     threshold: int,
-    processed_genes: pl.DataFrame,
-    gene_set_df: pl.DataFrame,
-    gene_coords_df: pl.DataFrame,
-    factors_df: pl.DataFrame,
-    population_names: List[str],
+    target_genes: pl.DataFrame,
+    gene_data: pl.DataFrame,
     min_distance: int = 1000000,
     tolerance: float = 0.1,
-    run_bootstrap: bool = True,
-    bootstrap_iterations: int = 1000,
-    bootstrap_runs: int = 10,
-    log_prefix: str = ""
-) -> Dict[str, Dict[str, Any]]:
+    min_controls_required: int = 5,
+) -> (int, list):
     """
-    Process a single threshold to improve parallelization.
+    Process a single threshold value during GSE pipeline execution.
     
     Args:
-        threshold: The rank threshold to process
-        processed_genes: Processed genes DataFrame
-        gene_set_df: Gene set DataFrame
-        gene_coords_df: Gene coordinates DataFrame
-        factors_df: Factors DataFrame
-        population_names: List of population names
-        min_distance: Minimum distance for control genes
-        tolerance: Tolerance for matching control genes
-        run_bootstrap: Whether to run bootstrap analysis
-        bootstrap_iterations: Number of bootstrap iterations
-        bootstrap_runs: Number of bootstrap runs
-        log_prefix: Prefix for log messages (used by parallel processing)
+        pipeline_data: PipelineData object containing pipeline data
+        threshold: Threshold value for gene selection
+        target_genes: DataFrame containing target genes
+        gene_data: DataFrame containing gene data
+        min_distance: Minimum distance between target and control genes (bp)
+        tolerance: Tolerance for factor matching (0.1 = 10%)
+        min_controls_required: Minimum number of control genes required for valid results
         
     Returns:
-        Dictionary with results for this threshold
+        Tuple of threshold and enrichment results list
     """
-    # Create a separate logger for this process to avoid synchronization issues
-    thread_logger = logging.getLogger(f"{__name__}.threshold_{threshold}")
-    
-    thread_logger.debug(f"{log_prefix}Processing threshold {threshold}")
-    threshold_results = {}
-    
-    # Step 2: Identify target genes for this threshold
-    # First get all genes that are in the gene set
-    gene_set_genes = processed_genes.join(
-        gene_set_df,
-        on='gene_id',
-        how='inner'
+    # Get the genes within the threshold
+    genes_within_threshold = self._get_genes_within_threshold(
+        threshold, pipeline_data.gene_ranks
     )
     
-    # Create a target gene set that respects the threshold by selecting top-ranked genes
-    # We'll do this for each population
-    population_target_dfs = []
-    for population in population_names:
-        # Sort genes by score for this population (descending order)
-        sorted_genes = gene_set_genes.sort(population, descending=True)
-        
-        # Take only the top 'threshold' number of genes
-        top_genes = sorted_genes.head(threshold)
-        
-        # Add to our list of population-specific target genes
-        population_target_dfs.append(top_genes)
-    
-    # Combine all population-specific target gene sets into one
-    if population_target_dfs:
-        # Use union to get unique genes across all population targets
-        all_targets = pl.concat(population_target_dfs).unique(subset=['gene_id'])
-        
-        # This becomes our target gene set for this threshold
-        target_genes = all_targets
-    else:
-        # Fallback to using all gene set genes (should not happen in normal operation)
-        target_genes = gene_set_genes
-    
-    thread_logger.debug(f"{log_prefix}Identified {len(target_genes)} target genes after filtering for threshold {threshold}")
-    
-    # Step 3: Compute gene distances
-    distances_df = compute_gene_distances(gene_coords_df)
-    
-    # Step 4: Find control genes (genes far enough from target genes)
-    control_genes = find_control_genes(
-        target_genes,
-        distances_df,
-        min_distance=min_distance
+    # Filter the target genes by the genes within the threshold
+    target_genes_with_scores = genes_within_threshold.join(
+        target_genes, on="gene_id", how="inner"
     )
-    thread_logger.debug(f"{log_prefix}Found {len(control_genes)} potential control genes for threshold {threshold}")
     
-    # Check how many control genes are in processed dataset
-    control_genes_in_processed = processed_genes.join(
+    # Skip this threshold if no target genes within threshold
+    if len(target_genes_with_scores) == 0:
+        logger.info(f"No target genes found within threshold {threshold}")
+        return threshold, []
+    
+    # Only get IDs of control genes that are within the threshold
+    control_genes_within_threshold = genes_within_threshold.filter(
+        ~pl.col("gene_id").is_in(target_genes["gene_id"])
+    )
+    
+    # Find control genes that are far enough from target genes
+    control_genes = self.find_control_genes(
+        target_genes_with_scores, control_genes_within_threshold, gene_data, min_distance
+    )
+    
+    # If there are no control genes, return empty results with a warning
+    if len(control_genes) == 0:
+        logger.warning(
+            f"No control genes matched for threshold {threshold}. "
+            f"Consider reducing min_distance ({min_distance:,}) or adjusting other parameters."
+        )
+        return threshold, []
+    
+    # Match control genes by confounding factors
+    matched_control_genes = match_confounding_factors(
+        target_genes_with_scores,
         control_genes,
-        on='gene_id',
-        how='inner'
+        pipeline_data.factors,
+        tolerance=tolerance,
+        min_controls_required=min_controls_required
     )
-    thread_logger.debug(f"{log_prefix}Control genes in processed dataset: {len(control_genes_in_processed)}")
     
-    # Step 5: Match control genes based on confounding factors
-    matched_controls = match_confounding_factors(
-        target_genes,
-        control_genes_in_processed,  # Use only control genes that are in processed set
-        factors_df,
-        tolerance=tolerance
-    )
-    thread_logger.debug(f"{log_prefix}Matched {len(matched_controls)} control genes for threshold {threshold}")
+    # Process each population
+    enrichment_results = []
     
-    # We need to ensure we have control genes
-    if len(matched_controls) == 0:
-        thread_logger.warning(f"{log_prefix}No control genes matched for threshold {threshold}. Results may not be valid.")
-        # In this case, we'll proceed with empty control sets, which will result in NaN enrichment ratios
-    
-    # Step 6: Perform enrichment analysis for each population
-    for population in population_names:
-        thread_logger.debug(f"{log_prefix}Analyzing population: {population} for threshold {threshold}")
-        
+    for population in pipeline_data.populations:
         # Get scores for target genes
-        target_scores = processed_genes.join(
-            target_genes.select(['gene_id']),
-            on='gene_id',
-            how='inner'
-        )[population].to_numpy()
+        target_scores = self._get_gene_scores(
+            target_genes_with_scores, population, genes_within_threshold
+        )
         
-        # Get scores for control genes - we need to ensure we first extract just the gene_id column
-        # This fix handles the case where matched_controls might have extra columns
-        if len(matched_controls) > 0:
-            # First make sure we're only using the gene_id column for the join
-            control_ids = matched_controls.select(['gene_id'])
+        # Get scores for matched control genes
+        control_scores = self._get_gene_scores(
+            matched_control_genes, population, genes_within_threshold
+        )
+        
+        # Skip if no scores for either target or control
+        if len(target_scores) == 0:
+            logger.debug(f"No target genes with scores for population {population}")
+            continue
             
-            # Then join with the processed genes to get scores
-            control_genes_with_scores = processed_genes.join(
-                control_ids,
-                on='gene_id',
-                how='inner'
+        if len(control_scores) == 0:
+            logger.warning(
+                f"No control genes with scores for population {population}. "
+                f"Using {len(matched_control_genes)} control genes but none had scores."
             )
-            
-            # Extract the scores as a numpy array
-            control_scores = control_genes_with_scores[population].to_numpy()
-            
-            # Log the number of control genes with valid scores
-            thread_logger.debug(f"{log_prefix}Found {len(control_scores)} control genes with valid scores for population {population}")
-        else:
-            # If no control genes matched, use an empty array
-            control_scores = np.array([])
-            thread_logger.warning(f"{log_prefix}No control genes with scores for population {population}")
+            continue
         
         # Calculate enrichment
-        enrichment_stats = calculate_enrichment(target_scores, control_scores)
+        enrichment_ratio = np.mean(target_scores) / np.mean(control_scores)
         
-        threshold_results[population] = enrichment_stats
-        thread_logger.debug(
-            f"{log_prefix}Population {population} at threshold {threshold}: "
-            f"Enrichment ratio = {enrichment_stats['enrichment_ratio']:.4f}, "
-            f"p-value = {enrichment_stats['p_value']:.6f}"
+        # Calculate empirical p-value
+        # Randomly sample n genes from within threshold genes where n = number of target genes
+        # Calculate mean of random sample / mean of control genes
+        # Calculate how many random samples have an enrichment ratio >= the observed enrichment ratio
+        n_target = len(target_scores)
+        n_permutations = self.config.permutations
+        
+        # Get all genes with scores for this population
+        genes_with_scores = self._get_all_genes_with_scores(
+            genes_within_threshold, population
+        )
+        
+        # Skip if not enough genes with scores for permutation
+        if len(genes_with_scores) < n_target:
+            logger.warning(
+                f"Not enough genes with scores for population {population} "
+                f"to run permutation test (need {n_target}, have {len(genes_with_scores)})"
+            )
+            continue
+        
+        # Get null distribution from permutation test
+        null_distribution = self._perform_permutation_test(
+            genes_with_scores, control_scores, n_target, n_permutations
+        )
+        
+        # Calculate empirical p-value
+        p_value = np.mean(null_distribution >= enrichment_ratio)
+        
+        # Store results
+        enrichment_results.append(
+            EnrichmentResult(
+                threshold=threshold,
+                population=population,
+                n_target_genes=len(target_scores),
+                n_control_genes=len(control_scores),
+                target_mean=float(np.mean(target_scores)),
+                control_mean=float(np.mean(control_scores)),
+                enrichment_ratio=float(enrichment_ratio),
+                p_value=float(p_value),
+                target_control_ratio=len(target_scores) / max(len(control_scores), 1),
+            )
         )
     
-    # Step 7: Perform FDR correction for this threshold
-    p_values = np.array([threshold_results[pop]['p_value'] for pop in population_names])
-    fdr_results = perform_fdr_analysis(p_values)
+    return threshold, enrichment_results
+
+def match_confounding_factors(
+    target_genes: pl.DataFrame,
+    control_genes: pl.DataFrame,
+    factors_df: pl.DataFrame,
+    tolerance: float = 0.1,
+    min_controls_required: int = 5,
+    max_tolerance: float = 0.5,
+    tolerance_step: float = 0.1
+) -> pl.DataFrame:
+    """
+    Match control genes to target genes based on confounding factors.
+    Uses adaptive tolerance to find enough control genes.
     
-    # Add FDR results to population results
-    for i, population in enumerate(population_names):
-        threshold_results[population]['fdr_corrected_p_value'] = float(fdr_results['pvals_corrected'][i])
-        threshold_results[population]['significant'] = bool(fdr_results['reject'][i])
+    Args:
+        target_genes: DataFrame with target genes
+        control_genes: DataFrame with control genes
+        factors_df: DataFrame with confounding factors
+        tolerance: Initial tolerance for matching (0.1 = 10%)
+        min_controls_required: Minimum number of control genes required
+        max_tolerance: Maximum tolerance to try if initial matching yields too few controls
+        tolerance_step: Step size for increasing tolerance when needed
+        
+    Returns:
+        DataFrame of matched control genes
+    """
+    if len(control_genes) == 0 or len(target_genes) == 0:
+        logger.warning("Either control genes or target genes are empty. Cannot match confounding factors.")
+        return pl.DataFrame(schema=control_genes.schema)
     
-    # Step 8: Perform bootstrap analysis for this threshold (if enabled)
-    if run_bootstrap:
-        for population in population_names:
-            # Get scores for target and control genes
-            target_scores = processed_genes.join(
-                target_genes.select(['gene_id']),
-                on='gene_id',
-                how='inner'
-            )[population].to_numpy()
-            
-            # Get control scores (same fix as above)
-            if len(matched_controls) > 0:
-                control_ids = matched_controls.select(['gene_id'])
-                control_genes_with_scores = processed_genes.join(
-                    control_ids,
-                    on='gene_id',
-                    how='inner'
-                )
-                control_scores = control_genes_with_scores[population].to_numpy()
-            else:
-                control_scores = np.array([])
-            
-            # FIXED: Aggregate bootstrap results across multiple runs
-            # Lists to collect all resampled values across all bootstrap runs
-            all_target_means = []
-            all_control_means = []
-            all_enrichment_ratios = []
-            all_target_minus_control = []
-            
-            # Run bootstrap analysis multiple times
-            for run_idx in range(bootstrap_runs):
-                # Resample target scores
-                target_bootstrap = bootstrap_analysis(
-                    target_scores,
-                    n_iterations=bootstrap_iterations
-                )
-                
-                # Resample control scores
-                control_bootstrap = bootstrap_analysis(
-                    control_scores,
-                    n_iterations=bootstrap_iterations
-                )
-                
-                # Calculate enrichment ratio for this run
-                enrichment_ratio = target_bootstrap['mean'] / control_bootstrap['mean'] if control_bootstrap['mean'] != 0 else float('nan')
-                target_minus_control = target_bootstrap['mean'] - control_bootstrap['mean']
-                
-                # Collect results across all runs
-                all_target_means.append(target_bootstrap['mean'])
-                all_control_means.append(control_bootstrap['mean'])
-                all_enrichment_ratios.append(enrichment_ratio)
-                all_target_minus_control.append(target_minus_control)
-            
-            # Calculate aggregated statistics across all bootstrap runs
-            bootstrap_result = {
-                'target_mean': float(np.mean(all_target_means)),
-                'target_std': float(np.std(all_target_means)),
-                'control_mean': float(np.mean(all_control_means)),
-                'control_std': float(np.std(all_control_means)),
-                'enrichment_ratio': float(np.mean(all_enrichment_ratios)),
-                'enrichment_ratio_std': float(np.std(all_enrichment_ratios)),
-                'target_minus_control': float(np.mean(all_target_minus_control)),
-                'target_minus_control_std': float(np.std(all_target_minus_control)),
-                # Store detailed results from each run for reference
-                'runs': [
-                    {
-                        'target_mean': float(tm),
-                        'control_mean': float(cm),
-                        'enrichment_ratio': float(er),
-                        'target_minus_control': float(tmc)
-                    }
-                    for tm, cm, er, tmc in zip(
-                        all_target_means, all_control_means, 
-                        all_enrichment_ratios, all_target_minus_control
-                    )
-                ]
-            }
-            
-            # Add bootstrap results to the threshold results
-            threshold_results[population]['bootstrap'] = bootstrap_result
+    # Add confounding factors to genes
+    target_with_factors = target_genes.join(
+        factors_df,
+        on='gene_id',
+        how='inner'
+    )
     
-    # Return a tuple of threshold and results for easier tracking in parallel processing        
-    return {threshold: threshold_results}
+    control_with_factors = control_genes.join(
+        factors_df,
+        on='gene_id',
+        how='inner'
+    )
+    
+    if len(target_with_factors) == 0:
+        logger.warning("No target genes with confounding factors found.")
+        return pl.DataFrame(schema=control_genes.schema)
+        
+    if len(control_with_factors) == 0:
+        logger.warning("No control genes with confounding factors found.")
+        return pl.DataFrame(schema=control_genes.schema)
+    
+    # Extract factor column names (all columns except gene_id)
+    factor_columns = [col for col in factors_df.columns if col != 'gene_id']
+    
+    if not factor_columns:
+        logger.warning("No confounding factors found.")
+        return control_genes
+    
+    # Compute target gene factor statistics
+    target_factor_means = target_with_factors.select([
+        pl.mean(col).alias(col)
+        for col in factor_columns
+    ])
+    
+    # Start with initial tolerance
+    current_tolerance = tolerance
+    matched_controls = pl.DataFrame(schema=control_genes.schema)
+    
+    # Try increasing tolerance until we have enough matched genes or hit the limit
+    while current_tolerance <= max_tolerance:
+        matched_genes = []
+        
+        # For each control gene, check if all factors are within tolerance
+        for control_gene in control_with_factors.iter_rows(named=True):
+            is_match = all(
+                abs(target_factor_means[0][factor] - control_gene[factor]) / abs(target_factor_means[0][factor]) <= current_tolerance
+                if target_factor_means[0][factor] != 0 else True  # Avoid division by zero
+                for factor in factor_columns
+            )
+            
+            if is_match:
+                matched_genes.append(control_gene)
+        
+        # Convert matched genes to DataFrame
+        if matched_genes:
+            matched_controls = pl.DataFrame(matched_genes)
+            
+            # If we have enough controls, we can stop
+            if len(matched_controls) >= min_controls_required:
+                # Log the tolerance we eventually used if it was increased
+                if current_tolerance > tolerance:
+                    logger.info(f"Found {len(matched_controls)} matched control genes using increased tolerance: {current_tolerance:.2f}")
+                break
+        
+        # Increase tolerance and try again if we didn't find enough matches
+        current_tolerance += tolerance_step
+        logger.debug(f"Increasing tolerance to {current_tolerance:.2f} to find more control genes")
+    
+    # Log result of matching
+    if len(matched_controls) == 0:
+        logger.warning(f"No control genes matched even with max tolerance {max_tolerance:.2f}")
+    elif len(matched_controls) < min_controls_required:
+        logger.warning(f"Only found {len(matched_controls)} control genes (minimum recommended: {min_controls_required})")
+    else:
+        logger.debug(f"Matched {len(matched_controls)} control genes with tolerance {current_tolerance:.2f}")
+    
+    return matched_controls
 
 class GeneSetEnrichmentPipeline:
     """Main class for running gene set enrichment analysis."""

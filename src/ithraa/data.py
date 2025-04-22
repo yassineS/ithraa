@@ -429,6 +429,13 @@ def find_control_genes(
     # Remove any target genes that might have been included
     control_genes = control_genes - target_ids
     
+    # Return a properly typed dataframe, even when empty
+    if not control_genes:
+        # Create an empty DataFrame with the correct schema
+        # Use the same type as the gene_id in the target_genes DataFrame
+        gene_id_type = target_genes.schema['gene_id']
+        return pl.DataFrame({'gene_id': []}, schema={'gene_id': gene_id_type})
+    
     return pl.DataFrame({'gene_id': list(control_genes)})
 
 def match_confounding_factors(
@@ -436,7 +443,10 @@ def match_confounding_factors(
     control_genes: pl.DataFrame,
     factors: pl.DataFrame,
     tolerance: float = 0.1,
-    n_matches: int = 1
+    n_matches: int = 1,
+    min_controls_required: int = 5,
+    max_tolerance: float = 0.5,
+    tolerance_step: float = 0.1
 ) -> pl.DataFrame:
     """
     Match control genes to target genes based on confounding factors.
@@ -449,6 +459,9 @@ def match_confounding_factors(
         factors: DataFrame with gene IDs and confounding factors
         tolerance: Maximum allowed relative difference in factor values (as a fraction)
         n_matches: Number of control genes to match to each target gene
+        min_controls_required: Minimum number of control genes required before relaxing tolerance
+        max_tolerance: Maximum tolerance to try if initial matching yields too few controls
+        tolerance_step: Step size for increasing tolerance when needed
         
     Returns:
         DataFrame with matched control gene IDs and corresponding target gene IDs
@@ -457,8 +470,12 @@ def match_confounding_factors(
         raise ValueError("Target genes DataFrame cannot be empty")
     
     if control_genes.height == 0:
-        # Return an empty DataFrame with the correct schema
-        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
+        # Create schema with factor columns included
+        schema = {'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8}
+        for col in factors.columns:
+            if col != 'gene_id':
+                schema[col] = factors.schema[col]
+        return pl.DataFrame(schema=schema)
     
     if factors.height == 0:
         raise ValueError("Factors DataFrame cannot be empty")
@@ -495,53 +512,98 @@ def match_confounding_factors(
     control_ids = control_factors['gene_id'].to_numpy()
     
     if len(target_values) == 0 or len(control_values) == 0:
-        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
+        # Create schema with factor columns included
+        schema = {'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8}
+        for col in factors.columns:
+            if col != 'gene_id':
+                schema[col] = factors.schema[col]
+        return pl.DataFrame(schema=schema)
     
-    # Use our helper function for matching
-    matches = _match_gene_factors(target_values, control_values, tolerance)
-    
-    # Find best matches for each target gene
+    # Use adaptive tolerance strategy - start with the provided tolerance
+    current_tolerance = tolerance
+    matched_controls_count = 0
     all_matched_genes = []
     
-    for i in range(matches.shape[0]):
-        target_id = target_ids[i]
-        matched_control_indices = []
+    # Try with increasingly relaxed tolerance until we get enough matches or hit the limit
+    while matched_controls_count < min_controls_required and current_tolerance <= max_tolerance:
+        # Use our helper function for matching
+        matches = _match_gene_factors(target_values, control_values, current_tolerance)
         
-        # Find all control genes that match this target gene
-        for j in range(matches.shape[1]):
-            if matches[i, j]:
-                matched_control_indices.append(j)
+        # Reset results for this tolerance level
+        all_matched_genes = []
         
-        # If no matches found for this target gene, continue to the next one
-        if not matched_control_indices:
-            continue
+        # Find best matches for each target gene
+        for i in range(matches.shape[0]):
+            target_id = target_ids[i]
+            matched_control_indices = []
             
-        # Calculate factor similarity scores for matched control genes
-        # For simplicity, use the sum of absolute differences as a similarity metric
-        similarities = []
-        for j in matched_control_indices:
-            diff_sum = 0
-            for k in range(len(factor_cols)):
-                diff_sum += abs(target_values[i, k] - control_values[j, k])
-            similarities.append((j, diff_sum))
+            # Find all control genes that match this target gene
+            for j in range(matches.shape[1]):
+                if matches[i, j]:
+                    matched_control_indices.append(j)
+            
+            # If no matches found for this target gene, continue to the next one
+            if not matched_control_indices:
+                continue
+                
+            # Calculate factor similarity scores for matched control genes
+            # For simplicity, use the sum of absolute differences as a similarity metric
+            similarities = []
+            for j in matched_control_indices:
+                diff_sum = 0
+                for k in range(len(factor_cols)):
+                    diff_sum += abs(target_values[i, k] - control_values[j, k])
+                similarities.append((j, diff_sum))
+            
+            # Sort by similarity (lower score = more similar)
+            similarities.sort(key=lambda x: x[1])
+            
+            # Take the top n matches
+            top_matches = similarities[:min(n_matches, len(similarities))]
+            
+            # Add to results
+            for match_idx, _ in top_matches:
+                control_id = control_ids[match_idx]
+                match_result = {
+                    'gene_id': control_id,
+                    'target_gene_id': target_id,
+                }
+                
+                # Include the factor values for the control gene
+                control_gene_factors = control_factors.filter(pl.col('gene_id') == control_id).to_dicts()
+                if control_gene_factors:
+                    factor_values = control_gene_factors[0]
+                    for col in factor_cols:
+                        match_result[col] = factor_values[col]
+                
+                all_matched_genes.append(match_result)
         
-        # Sort by similarity (lower score = more similar)
-        similarities.sort(key=lambda x: x[1])
+        # Count how many unique control genes we matched
+        if all_matched_genes:
+            matched_controls_count = len(set(match['gene_id'] for match in all_matched_genes))
+            
+            # If we have enough matches, break out of the loop
+            if matched_controls_count >= min_controls_required:
+                # Log that we found enough matches at this tolerance level
+                logging.debug(f"Found {matched_controls_count} control genes at tolerance {current_tolerance:.2f}")
+                break
         
-        # Take the top n matches
-        top_matches = similarities[:min(n_matches, len(similarities))]
-        
-        # Add to results
-        for match_idx, _ in top_matches:
-            control_id = control_ids[match_idx]
-            all_matched_genes.append({
-                'gene_id': control_id,
-                'target_gene_id': target_id,
-            })
+        # If we didn't get enough matches, increase tolerance and try again
+        current_tolerance += tolerance_step
+        logging.debug(f"Increasing tolerance to {current_tolerance:.2f} to find more control genes")
+    
+    # Log the final tolerance used for matching
+    if matched_controls_count < min_controls_required:
+        logging.warning(f"Only found {matched_controls_count} control genes even with maximum tolerance {max_tolerance:.2f}")
     
     # Create DataFrame with matched genes
     if not all_matched_genes:
-        return pl.DataFrame(schema={'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8})
+        # Create schema with factor columns included
+        schema = {'gene_id': pl.Utf8, 'target_gene_id': pl.Utf8}
+        for col in factors.columns:
+            if col != 'gene_id':
+                schema[col] = factors.schema[col]
+        return pl.DataFrame(schema=schema)
     
     return pl.DataFrame(all_matched_genes)
 
