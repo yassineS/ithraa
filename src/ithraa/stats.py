@@ -11,7 +11,7 @@ import polars as pl
 from scipy import stats
 import statsmodels.api as sm
 from statsmodels.stats.multitest import multipletests
-
+from scipy.spatial.distance import mahalanobis
 
 
 #  Core numba-optimised functions for inner loops and heavy calculations
@@ -186,176 +186,6 @@ def _calculate_mahalanobis_distance(vec1, vec2, inv_cov):
     """
     diff = vec1 - vec2
     return np.sqrt(diff @ inv_cov @ diff.T)
-
-@nb.njit(parallel=True)
-def _calculate_mahalanobis_distances_batch(target_features, background_features, inv_cov, exclude_indices):
-    """
-    Calculate Mahalanobis distances for one target against all background features.
-    Uses parallel processing for better performance.
-    
-    Args:
-        target_features: Feature vector for the target gene
-        background_features: Feature matrix for all background genes
-        inv_cov: Inverse covariance matrix
-        exclude_indices: Set of indices to exclude (as a sorted array)
-        
-    Returns:
-        Tuple of (distances, valid_indices)
-    """
-    n_bg = background_features.shape[0]
-    max_size = n_bg  # Maximum possible number of valid genes
-    
-    # Pre-allocate arrays
-    distances = np.zeros(max_size, dtype=np.float64)
-    valid_indices = np.zeros(max_size, dtype=np.int64)
-    
-    # Keep track of how many valid items we've found
-    valid_count = 0
-    
-    # Calculate distances in parallel
-    for j in nb.prange(n_bg):
-        # Check if this index should be excluded
-        exclude = False
-        for idx in exclude_indices:
-            if j == idx:
-                exclude = True
-                break
-        
-        if not exclude:
-            # Calculate distance
-            diff = background_features[j] - target_features
-            dist = np.sqrt(np.sum(diff * (inv_cov @ diff)))
-            
-            # Store the result
-            distances[valid_count] = dist
-            valid_indices[valid_count] = j
-            valid_count += 1
-    
-    # Return only the valid entries
-    return distances[:valid_count], valid_indices[:valid_count]
-
-@nb.njit
-def _find_best_matches(distances, indices, n_matches):
-    """
-    Find the indices of the n_matches smallest distances.
-    
-    Args:
-        distances: Array of distances
-        indices: Array of corresponding indices
-        n_matches: Number of matches to find
-        
-    Returns:
-        Array of indices for the best matches
-    """
-    if len(distances) <= n_matches:
-        # If we have fewer distances than requested matches, return all sorted by distance
-        sorted_idx = np.argsort(distances)
-        return indices[sorted_idx]
-    else:
-        # Otherwise, use argpartition to efficiently find the n smallest distances
-        best_idx = np.argpartition(distances, n_matches)[:n_matches]
-        # Sort these by distance for consistent results
-        best_sorted_idx = best_idx[np.argsort(distances[best_idx])]
-        return indices[best_sorted_idx]
-
-@nb.njit(parallel=True)
-def _batch_mahalanobis_distances(X, Y, inv_cov):
-    """
-    Calculate Mahalanobis distances between all pairs of points in X and Y.
-    
-    This is a highly optimized function that uses matrix operations and
-    parallel processing to calculate Mahalanobis distances between all pairs
-    of points in X and Y.
-    
-    Args:
-        X: Array of shape (n, p) containing n points in p-dimensional space
-        Y: Array of shape (m, p) containing m points in p-dimensional space
-        inv_cov: Inverse covariance matrix of shape (p, p)
-        
-    Returns:
-        Array of shape (n, m) containing distances between all pairs of points
-    """
-    n = X.shape[0]
-    m = Y.shape[0]
-    result = np.zeros((n, m))
-    
-    # Calculate distances in parallel across rows of X
-    for i in nb.prange(n):
-        x_i = X[i]
-        for j in range(m):
-            diff = x_i - Y[j]
-            result[i, j] = np.sqrt(np.sum(diff * (inv_cov @ diff)))
-    
-    return result
-
-@nb.njit(parallel=True)
-def _find_candidates_by_sd_threshold(distances_matrix, sd_threshold, min_candidates=10):
-    """
-    Efficiently find candidate genes based on standard deviation thresholds.
-    Uses highly optimized parallel processing to handle multiple targets at once.
-    
-    Args:
-        distances_matrix: Matrix of shape (n_targets, n_background) containing distances
-        sd_threshold: Initial standard deviation threshold
-        min_candidates: Minimum number of candidates to find (will increase threshold if needed)
-        
-    Returns:
-        List of arrays containing candidate indices for each target
-    """
-    n_targets = distances_matrix.shape[0]
-    n_bg = distances_matrix.shape[1]
-    result = []
-    
-    # Process each target gene in parallel
-    for i in nb.prange(n_targets):
-        target_distances = distances_matrix[i]
-        
-        # Calculate mean and std using optimized methods (faster than np.mean and np.std)
-        dist_sum = 0.0
-        for j in range(n_bg):
-            dist_sum += target_distances[j]
-        mean_dist = dist_sum / n_bg
-        
-        # Calculate standard deviation
-        var_sum = 0.0
-        for j in range(n_bg):
-            diff = target_distances[j] - mean_dist
-            var_sum += diff * diff
-        std_dist = np.sqrt(var_sum / n_bg)
-        
-        # First attempt with initial threshold
-        threshold = mean_dist + sd_threshold * std_dist
-        
-        # Count candidates (faster than creating a mask then counting)
-        count = 0
-        for j in range(n_bg):
-            if target_distances[j] <= threshold:
-                count += 1
-        
-        # If not enough candidates, try with double threshold
-        if count < min_candidates:
-            threshold = mean_dist + 2.0 * sd_threshold * std_dist
-            
-        # Create array just large enough to hold the candidates
-        # Count again to determine size
-        count = 0
-        for j in range(n_bg):
-            if target_distances[j] <= threshold:
-                count += 1
-                
-        # Allocate array of exact size needed
-        candidates = np.empty(count, dtype=np.int32)
-        
-        # Fill array with candidate indices
-        idx = 0
-        for j in range(n_bg):
-            if target_distances[j] <= threshold:
-                candidates[idx] = j
-                idx += 1
-        
-        result.append(candidates)
-    
-    return result
 
 def calculate_enrichment(target_counts, control_counts) -> Dict[str, float]:
     """
@@ -665,6 +495,8 @@ def match_genes_mahalanobis(
     from datetime import datetime
     from pathlib import Path
     import time
+    import numpy as np
+    from scipy.spatial.distance import mahalanobis
     
     start_time = time.time()
     
@@ -699,28 +531,18 @@ def match_genes_mahalanobis(
         ["gene_id"] + ([chr_col] if chr_col in all_genes_data.columns else []) + confounders
     )
     
-    # Convert to numpy arrays for faster computation
-    target_features = target_genes.select(feature_cols).to_numpy()
-    target_ids = target_genes["gene_id"].to_numpy()
-    background_features = background_genes.select(feature_cols).to_numpy()
-    background_ids = background_genes["gene_id"].to_numpy()
+    # Filter background genes to exclude target genes
+    background_genes = background_genes.filter(~pl.col("gene_id").is_in(exclude_gene_ids))
     
-    # Create mask for excluding genes from background
-    valid_bg_mask = np.ones(len(background_ids), dtype=bool)
-    for i, bg_id in enumerate(background_ids):
-        if bg_id in exclude_gene_ids:
-            valid_bg_mask[i] = False
-            
-    # Filter background features and IDs
-    valid_bg_indices = np.where(valid_bg_mask)[0]
-    valid_bg_features = background_features[valid_bg_mask]
-    valid_bg_ids = background_ids[valid_bg_mask]
-        
-    print(f"Processing {len(target_ids)} target genes against {len(valid_bg_ids)} background genes")
+    # Get chromosome information if available
+    has_chr = chr_col in target_genes.columns and chr_col in background_genes.columns
     
     # Calculate covariance matrix for initial Mahalanobis distance
-    # Use a regularized covariance estimation to ensure numerical stability
-    all_features = np.vstack([target_features, valid_bg_features])
+    # Combine features from both target and background genes
+    all_features = pl.concat([
+        target_genes.select(feature_cols),
+        background_genes.select(feature_cols)
+    ]).to_numpy()
     
     # Calculate mean and covariance
     cov_matrix = np.cov(all_features, rowvar=False)
@@ -738,197 +560,172 @@ def match_genes_mahalanobis(
     # Prepare to store results
     all_matched_data = []
     
-    # Create dictionary to map gene_id to chromosome if chromosome info is available
-    chr_map = {}
-    if chr_col in all_genes_data.columns:
-        for i, gene_id in enumerate(background_ids):
-            chr_map[gene_id] = background_genes[chr_col][i]
+    # Convert Polars DataFrames to lists of dictionaries for easier access
+    target_gene_rows = target_genes.to_dicts()
+    background_gene_rows = background_genes.to_dicts()
     
-    # Calculate pairwise distances if distance_col is present in the data
-    has_distances = distance_col in all_genes_data.columns
-    distances_dict = {}
-    
-    if has_distances:
-        # Extract distance data
-        distance_df = all_genes_data.select(["gene_id", distance_col])
-        # Create a dictionary for quick lookups of pairwise distances
-        all_genes = set(background_ids)
-        for g1 in all_genes:
-            distances_dict[g1] = {}
-            for g2 in all_genes:
-                if g1 != g2:
-                    # In a real implementation, this would look up the distance from a precomputed matrix
-                    # For now, we'll use a placeholder value from the distance column
-                    filtered = distance_df.filter((pl.col("gene_id") == g1) | (pl.col("gene_id") == g2))
-                    if filtered.height >= 2:
-                        distances_dict[g1][g2] = abs(filtered[distance_col][0] - filtered[distance_col][1])
-                    else:
-                        distances_dict[g1][g2] = 0.0
-    
-    # Find the maximum pairwise distance for chromosome penalty
-    max_pairwise_distance = 0.0
-    if has_distances:
-        for g1 in distances_dict:
-            for g2 in distances_dict[g1]:
-                max_pairwise_distance = max(max_pairwise_distance, distances_dict[g1][g2])
-    
-    # Process targets in batches for matrix operations
-    n_targets = len(target_features)
-    dist_calc_time = 0
-    sd_calc_time = 0
-    penalty_calc_time = 0
-    
-    for batch_start in range(0, n_targets, batch_size):
-        batch_end = min(batch_start + batch_size, n_targets)
-        batch_size_actual = batch_end - batch_start
-        target_batch_features = target_features[batch_start:batch_end]
-        target_batch_ids = target_ids[batch_start:batch_end]
-        
-        # Calculate initial distances between all targets in batch and all background genes
-        t0 = time.time()
-        initial_distances = _batch_mahalanobis_distances(target_batch_features, valid_bg_features, inv_cov)
-        t1 = time.time()
-        dist_calc_time += (t1 - t0)
-        
-        # Use our optimized SD-threshold function to find candidates for all targets in the batch
-        t0 = time.time()
-        candidates_by_target = _find_candidates_by_sd_threshold(initial_distances, sd_threshold, min_candidates=10)
-        t1 = time.time()
-        sd_calc_time += (t1 - t0)
-        
-        # Process each target in the batch with its candidates
-        t0 = time.time()
-        for i in range(batch_size_actual):
-            target_id = target_batch_ids[i]
-            target_feature = target_batch_features[i]
-            candidate_indices = candidates_by_target[i]
-            target_chr = chr_map.get(target_id, None) if chr_col in target_genes.columns else None
+    print(f"Processing {len(target_gene_rows)} target genes against {len(background_gene_rows)} background genes")
+
+    # Process each target gene
+    for target_idx, target_row in enumerate(target_gene_rows):
+        if target_idx % 10 == 0 and target_idx > 0:
+            print(f"Processed {target_idx} of {len(target_gene_rows)} target genes")
             
-            # If no candidates, skip this target
-            if len(candidate_indices) == 0:
+        target_id = target_row["gene_id"]
+        target_features = np.array([target_row[col] for col in feature_cols])
+        
+        if has_chr:
+            target_chr = target_row[chr_col]
+        
+        # Calculate Mahalanobis distances from this target to all background genes
+        distances = []
+        bg_indices = []
+        
+        for bg_idx, bg_row in enumerate(background_gene_rows):
+            try:
+                bg_features = np.array([bg_row[col] for col in feature_cols])
+                dist = mahalanobis(target_features, bg_features, inv_cov)
+                distances.append(dist)
+                bg_indices.append(bg_idx)
+            except Exception as e:
+                # Skip any problematic calculations
                 continue
+        
+        if not distances:
+            # No valid distances calculated
+            continue
             
-            # Get candidate info
-            # Get the actual SD threshold used (1x or 2x) based on number of candidates
-            current_sd_threshold = 2.0 * sd_threshold if len(candidate_indices) >= 10 else sd_threshold
-            
-            # Get distances and features for candidates
-            candidate_ids = valid_bg_ids[candidate_indices]
-            candidate_features = valid_bg_features[candidate_indices]
-            candidate_distances = initial_distances[i][candidate_indices]
-            
-            # Save intermediate candidates if requested
-            if save_intermediate and len(candidate_ids) > 0:
-                candidate_df = pl.DataFrame({
-                    "gene_id": candidate_ids,
-                    "target_gene_id": [target_id] * len(candidate_ids),
-                    "initial_distance": candidate_distances
+        distances = np.array(distances)
+        bg_indices = np.array(bg_indices)
+        
+        # Find candidates within SD threshold
+        mean_dist = np.mean(distances)
+        std_dist = np.std(distances)
+        
+        # First try with initial threshold
+        current_sd_threshold = sd_threshold
+        threshold = mean_dist + current_sd_threshold * std_dist
+        candidate_mask = distances <= threshold
+        
+        # If not enough candidates, try with double threshold
+        if np.sum(candidate_mask) < 10:
+            current_sd_threshold = 2.0 * sd_threshold
+            threshold = mean_dist + current_sd_threshold * std_dist
+            candidate_mask = distances <= threshold
+        
+        candidate_indices = bg_indices[candidate_mask]
+        candidate_distances = distances[candidate_mask]
+        
+        # Save intermediate candidates if requested
+        if save_intermediate and len(candidate_indices) > 0:
+            candidate_rows = []
+            for i, idx in enumerate(candidate_indices):
+                bg_row = background_gene_rows[idx]
+                bg_id = bg_row["gene_id"]
+                candidate_rows.append({
+                    "gene_id": bg_id,
+                    "target_gene_id": target_id,
+                    "initial_distance": float(candidate_distances[i])
                 })
                 
-                # Save to file
+            if candidate_rows:
+                candidate_df = pl.DataFrame(candidate_rows)
                 candidate_file = Path(intermediate_dir) / f"candidates_{target_id}.csv"
                 candidate_df.write_csv(candidate_file)
-            
-            # Recalculate distances with penalty
-            final_distances = []
-            
-            for j in range(len(candidate_indices)):
-                bg_id = candidate_ids[j]
-                bg_chr = chr_map.get(bg_id, None) if chr_map else None
-                
-                # Add pairwise distance penalty
-                pairwise_penalty = 0.0
-                if has_distances:
-                    if target_chr is not None and bg_chr is not None and target_chr != bg_chr:
-                        pairwise_penalty = -max_pairwise_distance
-                    elif target_id in distances_dict and bg_id in distances_dict[target_id]:
-                        pairwise_penalty = -distances_dict[target_id][bg_id]
-                
-                # Create augmented feature vectors with the penalty
-                augmented_feature_target = np.append(target_feature, [pairwise_penalty])
-                augmented_feature_bg = np.append(candidate_features[j], [0.0])
-                
-                # Create augmented covariance matrix with the penalty dimension
-                aug_dim = cov_matrix.shape[0] + 1
-                aug_cov = np.zeros((aug_dim, aug_dim))
-                aug_cov[:cov_matrix.shape[0], :cov_matrix.shape[0]] = cov_matrix
-                aug_cov[-1, -1] = 1.0  # Variance for penalty dimension
-                
-                # Calculate inverse of augmented covariance
-                try:
-                    aug_inv_cov = np.linalg.inv(aug_cov)
-                except np.linalg.LinAlgError:
-                    aug_inv_cov = np.linalg.pinv(aug_cov)
-                
-                # Calculate final Mahalanobis distance with penalty
-                diff = augmented_feature_bg - augmented_feature_target
-                final_dist = np.sqrt(diff @ aug_inv_cov @ diff.T)
-                final_distances.append(final_dist)
-            
-            # Check if we have any candidates after recalculation
-            if not final_distances:
-                continue
-            
-            # Convert to numpy for faster sorting
-            final_distances = np.array(final_distances)
-            
-            # Sort candidates by final distance and take top n
-            top_indices = np.argsort(final_distances)[:n_matches]
-            
-            # Add matches to results
-            for idx in top_indices:
-                # Get matched gene details
-                matched_id = candidate_ids[idx]
-                final_dist = final_distances[idx]
-                initial_dist = candidate_distances[idx]
-                
-                # Create a dictionary with match data
-                match_data = {
-                    "gene_id": matched_id,
-                    "target_gene_id": target_id,
-                    "mahalanobis_distance": float(final_dist),
-                    "initial_distance": float(initial_dist),
-                    "sd_threshold_used": float(current_sd_threshold)
-                }
-                
-                # Add factor values from background data
-                matched_row = background_genes.filter(pl.col("gene_id") == matched_id)
-                if matched_row.height > 0:
-                    for col in confounders:
-                        if col in matched_row.columns:
-                            match_data[col] = matched_row[col][0]
-                    
-                    # Add distance column if available
-                    if distance_col in all_genes_data.columns:
-                        matched_row_full = all_genes_data.filter(pl.col("gene_id") == matched_id)
-                        if matched_row_full.height > 0 and distance_col in matched_row_full.columns:
-                            match_data[distance_col] = matched_row_full[distance_col][0]
-                        
-                all_matched_data.append(match_data)
         
-        t1 = time.time()
-        penalty_calc_time += (t1 - t0)
+        # Recalculate distances with chromosome penalty
+        final_distances = []
+        final_indices = []
+        
+        for i, idx in enumerate(candidate_indices):
+            bg_row = background_gene_rows[idx]
+            bg_id = bg_row["gene_id"]
+            bg_features = np.array([bg_row[col] for col in feature_cols])
+            
+            # Apply chromosome penalty if chromosomes are different
+            pairwise_penalty = 0.0
+            if has_chr:
+                bg_chr = bg_row[chr_col]
+                if target_chr != bg_chr:
+                    # Apply penalty for different chromosomes
+                    pairwise_penalty = -1.0  # Simplified penalty
+            
+            # Create augmented feature vectors with penalty
+            aug_target_features = np.append(target_features, [pairwise_penalty])
+            aug_bg_features = np.append(bg_features, [0.0])
+            
+            # Create augmented covariance matrix
+            aug_dim = cov_matrix.shape[0] + 1
+            aug_cov = np.zeros((aug_dim, aug_dim))
+            aug_cov[:cov_matrix.shape[0], :cov_matrix.shape[0]] = cov_matrix
+            aug_cov[-1, -1] = 1.0
+            
+            # Calculate inverse
+            try:
+                aug_inv_cov = np.linalg.inv(aug_cov)
+            except np.linalg.LinAlgError:
+                aug_inv_cov = np.linalg.pinv(aug_cov)
+            
+            # Calculate final distance
+            try:
+                final_dist = mahalanobis(aug_bg_features, aug_target_features, aug_inv_cov)
+                final_distances.append(final_dist)
+                final_indices.append(idx)
+            except Exception as e:
+                # Skip problematic calculations
+                continue
+        
+        if not final_distances:
+            continue
+            
+        final_distances = np.array(final_distances)
+        final_indices = np.array(final_indices)
+        
+        # Sort by final distance and get top matches
+        sorted_indices = np.argsort(final_distances)
+        top_n = min(n_matches, len(sorted_indices))
+        top_indices = sorted_indices[:top_n]
+        
+        # Add matches to results
+        for idx in top_indices:
+            bg_row = background_gene_rows[final_indices[idx]]
+            bg_id = bg_row["gene_id"]
+            final_dist = final_distances[idx]
+            initial_dist = candidate_distances[np.where(candidate_indices == final_indices[idx])[0][0]]
+            
+            match_data = {
+                "gene_id": bg_id,
+                "target_gene_id": target_id,
+                "mahalanobis_distance": float(final_dist),
+                "initial_distance": float(initial_dist),
+                "sd_threshold_used": float(current_sd_threshold)
+            }
+            
+            # Add confounder values
+            for col in confounders:
+                if col in bg_row:
+                    match_data[col] = bg_row[col]
+            
+            all_matched_data.append(match_data)
     
     end_time = time.time()
-    total_time = end_time - start_time
-    
-    print(f"Timing breakdown: ")
-    print(f"  - Initial distance calculation: {dist_calc_time:.2f}s ({dist_calc_time/total_time*100:.1f}%)")
-    print(f"  - SD-threshold candidate selection: {sd_calc_time:.2f}s ({sd_calc_time/total_time*100:.1f}%)")
-    print(f"  - Penalty application and final selection: {penalty_calc_time:.2f}s ({penalty_calc_time/total_time*100:.1f}%)")
-    print(f"  - Total processing time: {total_time:.2f}s")
+    print(f"Processed all {len(target_gene_rows)} target genes in {end_time - start_time:.2f} seconds")
     
     # Convert results to DataFrame
     if not all_matched_data:
         # Return empty DataFrame with expected columns if no matches found
-        return pl.DataFrame(schema={
+        schema = {
             "gene_id": pl.Utf8,
             "target_gene_id": pl.Utf8, 
             "mahalanobis_distance": pl.Float64,
             "initial_distance": pl.Float64,
-            "sd_threshold_used": pl.Float64,
-            **{col: all_genes_data[col].dtype if col in all_genes_data.schema else pl.Float64 
-               for col in confounders + ([distance_col] if distance_col in all_genes_data.columns else [])}
-        })
+            "sd_threshold_used": pl.Float64
+        }
+        for col in confounders:
+            if col in all_genes_data.columns:
+                schema[col] = all_genes_data[col].dtype
+            else:
+                schema[col] = pl.Float64
+        return pl.DataFrame(schema=schema)
     
     return pl.DataFrame(all_matched_data)
