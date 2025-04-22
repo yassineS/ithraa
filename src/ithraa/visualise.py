@@ -335,17 +335,6 @@ def create_comparison_plots(
                 linewidth=1.5
             )
             
-            # Add gene labels for target genes
-            for _, row in target_points.iterrows():
-                plt.annotate(
-                    row["GeneID"],
-                    (row["Component1"], row["Component2"]),
-                    xytext=(5, 5),
-                    textcoords="offset points",
-                    fontsize=8,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7)
-                )
-                
             # Draw connecting segments between target genes and their matches
             # Only if target_gene_id column exists in the matches DataFrames
             if "target_gene_id" in traditional_matches.columns:
@@ -566,6 +555,7 @@ def plot_distance_distributions(
 ) -> None:
     """
     Plot distributions of Mahalanobis and Euclidean distances for both matching methods.
+    Also includes initial Mahalanobis distances (before penalty) if available.
     
     Args:
         traditional_distances: DataFrame with distances for traditional matches
@@ -591,9 +581,16 @@ def plot_distance_distributions(
                  color="#3366CC", edgecolor="black", bins=20)
     
     if mahalanobis_distances.height > 0:
+        # Plot final Mahalanobis distances
         maha_distances = mahalanobis_distances["mahalanobis_distance"].to_numpy()
-        plt.hist(maha_distances, alpha=0.6, label=f"Mahalanobis (mean={np.mean(maha_distances):.2f})", 
+        plt.hist(maha_distances, alpha=0.6, label=f"Mahalanobis Final (mean={np.mean(maha_distances):.2f})", 
                  color="#33CC66", edgecolor="black", bins=20)
+                 
+        # If initial distances are available, plot them too
+        if "initial_distance" in mahalanobis_distances.columns:
+            initial_distances = mahalanobis_distances["initial_distance"].to_numpy()
+            plt.hist(initial_distances, alpha=0.4, label=f"Mahalanobis Initial (mean={np.mean(initial_distances):.2f})", 
+                     color="#FF9933", edgecolor="black", bins=20)
     
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -633,3 +630,29 @@ def plot_distance_distributions(
     plt.savefig(euclidean_output_path, dpi=300)
     print(f"Saved Euclidean distance distribution to {euclidean_output_path}")
     plt.close()
+    
+    # Create a plot specifically for the relationship between initial and final distances
+    if mahalanobis_distances.height > 0 and "initial_distance" in mahalanobis_distances.columns:
+        plt.figure(figsize=(10, 8))
+        
+        initial_distances = mahalanobis_distances["initial_distance"].to_numpy()
+        final_distances = mahalanobis_distances["mahalanobis_distance"].to_numpy()
+        
+        plt.scatter(initial_distances, final_distances, alpha=0.6, color='#33CC66')
+        plt.title("Initial vs. Final Mahalanobis Distances", fontsize=14)
+        plt.xlabel("Initial Distance", fontsize=12)
+        plt.ylabel("Final Distance (with Penalty)", fontsize=12)
+        
+        # Add diagonal line for reference
+        min_val = min(np.min(initial_distances), np.min(final_distances))
+        max_val = max(np.max(initial_distances), np.max(final_distances))
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
+        
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # Save the plot
+        comparison_output_path = output_dir / "distance_comparison.png"
+        plt.savefig(comparison_output_path, dpi=300)
+        print(f"Saved distance comparison plot to {comparison_output_path}")
+        plt.close()
