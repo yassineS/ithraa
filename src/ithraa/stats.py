@@ -288,6 +288,75 @@ def _batch_mahalanobis_distances(X, Y, inv_cov):
     
     return result
 
+@nb.njit(parallel=True)
+def _find_candidates_by_sd_threshold(distances_matrix, sd_threshold, min_candidates=10):
+    """
+    Efficiently find candidate genes based on standard deviation thresholds.
+    Uses highly optimized parallel processing to handle multiple targets at once.
+    
+    Args:
+        distances_matrix: Matrix of shape (n_targets, n_background) containing distances
+        sd_threshold: Initial standard deviation threshold
+        min_candidates: Minimum number of candidates to find (will increase threshold if needed)
+        
+    Returns:
+        List of arrays containing candidate indices for each target
+    """
+    n_targets = distances_matrix.shape[0]
+    n_bg = distances_matrix.shape[1]
+    result = []
+    
+    # Process each target gene in parallel
+    for i in nb.prange(n_targets):
+        target_distances = distances_matrix[i]
+        
+        # Calculate mean and std using optimized methods (faster than np.mean and np.std)
+        dist_sum = 0.0
+        for j in range(n_bg):
+            dist_sum += target_distances[j]
+        mean_dist = dist_sum / n_bg
+        
+        # Calculate standard deviation
+        var_sum = 0.0
+        for j in range(n_bg):
+            diff = target_distances[j] - mean_dist
+            var_sum += diff * diff
+        std_dist = np.sqrt(var_sum / n_bg)
+        
+        # First attempt with initial threshold
+        threshold = mean_dist + sd_threshold * std_dist
+        
+        # Count candidates (faster than creating a mask then counting)
+        count = 0
+        for j in range(n_bg):
+            if target_distances[j] <= threshold:
+                count += 1
+        
+        # If not enough candidates, try with double threshold
+        if count < min_candidates:
+            threshold = mean_dist + 2.0 * sd_threshold * std_dist
+            
+        # Create array just large enough to hold the candidates
+        # Count again to determine size
+        count = 0
+        for j in range(n_bg):
+            if target_distances[j] <= threshold:
+                count += 1
+                
+        # Allocate array of exact size needed
+        candidates = np.empty(count, dtype=np.int32)
+        
+        # Fill array with candidate indices
+        idx = 0
+        for j in range(n_bg):
+            if target_distances[j] <= threshold:
+                candidates[idx] = j
+                idx += 1
+        
+        result.append(candidates)
+    
+    return result
+
 def calculate_enrichment(target_counts, control_counts) -> Dict[str, float]:
     """
     Calculate enrichment statistics with confidence intervals.
@@ -595,6 +664,9 @@ def match_genes_mahalanobis(
     import os
     from datetime import datetime
     from pathlib import Path
+    import time
+    
+    start_time = time.time()
     
     if gene_set_data.height == 0 or all_genes_data.height == 0:
         raise ValueError("Input data cannot be empty")
@@ -644,6 +716,8 @@ def match_genes_mahalanobis(
     valid_bg_features = background_features[valid_bg_mask]
     valid_bg_ids = background_ids[valid_bg_mask]
         
+    print(f"Processing {len(target_ids)} target genes against {len(valid_bg_ids)} background genes")
+    
     # Calculate covariance matrix for initial Mahalanobis distance
     # Use a regularized covariance estimation to ensure numerical stability
     all_features = np.vstack([target_features, valid_bg_features])
@@ -700,48 +774,48 @@ def match_genes_mahalanobis(
     
     # Process targets in batches for matrix operations
     n_targets = len(target_features)
+    dist_calc_time = 0
+    sd_calc_time = 0
+    penalty_calc_time = 0
     
     for batch_start in range(0, n_targets, batch_size):
         batch_end = min(batch_start + batch_size, n_targets)
+        batch_size_actual = batch_end - batch_start
         target_batch_features = target_features[batch_start:batch_end]
         target_batch_ids = target_ids[batch_start:batch_end]
         
         # Calculate initial distances between all targets in batch and all background genes
-        # This uses our optimized batch Mahalanobis calculation
+        t0 = time.time()
         initial_distances = _batch_mahalanobis_distances(target_batch_features, valid_bg_features, inv_cov)
+        t1 = time.time()
+        dist_calc_time += (t1 - t0)
         
-        # For each target in the batch
-        for i in range(batch_end - batch_start):
+        # Use our optimized SD-threshold function to find candidates for all targets in the batch
+        t0 = time.time()
+        candidates_by_target = _find_candidates_by_sd_threshold(initial_distances, sd_threshold, min_candidates=10)
+        t1 = time.time()
+        sd_calc_time += (t1 - t0)
+        
+        # Process each target in the batch with its candidates
+        t0 = time.time()
+        for i in range(batch_size_actual):
             target_id = target_batch_ids[i]
-            target_distances = initial_distances[i]
             target_feature = target_batch_features[i]
+            candidate_indices = candidates_by_target[i]
             target_chr = chr_map.get(target_id, None) if chr_col in target_genes.columns else None
             
-            # Calculate mean and standard deviation for this target's distances
-            mean_distance = np.mean(target_distances)
-            std_distance = np.std(target_distances)
-            
-            # Try with initial SD threshold
-            current_sd_threshold = sd_threshold
-            
-            # Find candidates within SD threshold (step 2)
-            candidate_mask = target_distances <= (mean_distance + current_sd_threshold * std_distance)
-            candidate_indices = np.where(candidate_mask)[0]
-            
-            # If fewer than 10 matches, retry with 2x SD threshold (step 4)
-            if len(candidate_indices) < 10:
-                current_sd_threshold = 2.0 * sd_threshold
-                candidate_mask = target_distances <= (mean_distance + current_sd_threshold * std_distance)
-                candidate_indices = np.where(candidate_mask)[0]
-            
-            # If still no candidates, skip this target
+            # If no candidates, skip this target
             if len(candidate_indices) == 0:
                 continue
-                
+            
             # Get candidate info
-            candidate_features = valid_bg_features[candidate_indices]
+            # Get the actual SD threshold used (1x or 2x) based on number of candidates
+            current_sd_threshold = 2.0 * sd_threshold if len(candidate_indices) >= 10 else sd_threshold
+            
+            # Get distances and features for candidates
             candidate_ids = valid_bg_ids[candidate_indices]
-            candidate_distances = target_distances[candidate_indices]
+            candidate_features = valid_bg_features[candidate_indices]
+            candidate_distances = initial_distances[i][candidate_indices]
             
             # Save intermediate candidates if requested
             if save_intermediate and len(candidate_ids) > 0:
@@ -758,8 +832,8 @@ def match_genes_mahalanobis(
             # Recalculate distances with penalty
             final_distances = []
             
-            for j, cand_idx in enumerate(candidate_indices):
-                bg_id = valid_bg_ids[cand_idx]
+            for j in range(len(candidate_indices)):
+                bg_id = candidate_ids[j]
                 bg_chr = chr_map.get(bg_id, None) if chr_map else None
                 
                 # Add pairwise distance penalty
@@ -831,6 +905,18 @@ def match_genes_mahalanobis(
                             match_data[distance_col] = matched_row_full[distance_col][0]
                         
                 all_matched_data.append(match_data)
+        
+        t1 = time.time()
+        penalty_calc_time += (t1 - t0)
+    
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    print(f"Timing breakdown: ")
+    print(f"  - Initial distance calculation: {dist_calc_time:.2f}s ({dist_calc_time/total_time*100:.1f}%)")
+    print(f"  - SD-threshold candidate selection: {sd_calc_time:.2f}s ({sd_calc_time/total_time*100:.1f}%)")
+    print(f"  - Penalty application and final selection: {penalty_calc_time:.2f}s ({penalty_calc_time/total_time*100:.1f}%)")
+    print(f"  - Total processing time: {total_time:.2f}s")
     
     # Convert results to DataFrame
     if not all_matched_data:
