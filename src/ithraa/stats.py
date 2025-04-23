@@ -588,10 +588,22 @@ def match_genes_mahalanobis(
         all_features = pl.concat([
             target_genes.select(feature_cols),
             background_genes.select(feature_cols)
-        ]).to_numpy()
+        ])
         
+        # Convert to numpy array
+        all_features_np = all_features.to_numpy()
+        
+        # Handle single feature case - ensure array is 2D
+        if len(feature_cols) == 1:
+            all_features_np = all_features_np.reshape(-1, 1)
+            
         # Calculate mean and covariance
-        cov_matrix = np.cov(all_features, rowvar=False)
+        cov_matrix = np.cov(all_features_np, rowvar=False)
+        
+        # Handle single feature case for covariance matrix
+        if len(feature_cols) == 1:
+            # If there's only one feature, cov returns a scalar, convert to 2D array
+            cov_matrix = np.array([[cov_matrix]])
         
         # Add a small regularization term to ensure the matrix is invertible
         cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
@@ -637,6 +649,10 @@ def match_genes_mahalanobis(
             
         try:
             target_features = np.array([target_row[col] for col in feature_cols])
+            
+            # Reshape if only one feature to match format required by mahalanobis function
+            if len(feature_cols) == 1:
+                target_features = target_features.reshape(1)
         except Exception as e:
             print(f"Error extracting features for target gene {target_id}: {e}")
             continue
@@ -655,6 +671,11 @@ def match_genes_mahalanobis(
                     continue
                     
                 bg_features = np.array([bg_row[col] for col in feature_cols])
+                
+                # Reshape if only one feature
+                if len(feature_cols) == 1:
+                    bg_features = bg_features.reshape(1)
+                    
                 dist = mahalanobis(target_features, bg_features, inv_cov)
                 distances.append(dist)
                 bg_indices.append(bg_idx)
@@ -712,6 +733,10 @@ def match_genes_mahalanobis(
             bg_row = background_gene_rows[idx]
             bg_id = bg_row["gene_id"]
             bg_features = np.array([bg_row[col] for col in feature_cols])
+            
+            # Reshape if only one feature
+            if len(feature_cols) == 1:
+                bg_features = bg_features.reshape(1)
             
             # Apply chromosome penalty if chromosomes are different and both are defined
             pairwise_penalty = 0.0
