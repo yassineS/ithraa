@@ -15,6 +15,7 @@ import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
+from ithraa.stats import calculate_distances
 
 
 def visualise_gene_matching(
@@ -271,109 +272,6 @@ def create_comparison_plots(
         
         except Exception as e:
             print(f"Error plotting distance distributions: {e}")
-
-
-def calculate_distances(gene_set_df, matched_df, factors_df):
-    """
-    Calculate Euclidean and Mahalanobis distances between target genes and their matches.
-    
-    Args:
-        gene_set_df: DataFrame containing target genes
-        matched_df: DataFrame containing matched genes with target_gene_id column
-        factors_df: DataFrame containing confounding factors for all genes
-        
-    Returns:
-        DataFrame with distances for each match
-    """
-    import numpy as np
-    from scipy.spatial.distance import mahalanobis, euclidean
-    
-    # Early return if matched_df is empty
-    if matched_df.height == 0:
-        schema = {
-            "gene_id": pl.Utf8,
-            "target_gene_id": pl.Utf8,
-            "mahalanobis_distance": pl.Float64,
-            "euclidean_distance": pl.Float64
-        }
-        return pl.DataFrame(schema=schema)
-    
-    # Validate input
-    if "target_gene_id" not in matched_df.columns:
-        raise ValueError("matched_df must have a target_gene_id column")
-    
-    # Get confounders (all numeric columns except gene_id and target_gene_id)
-    confounders = [col for col in factors_df.columns 
-                  if col not in ["gene_id", "target_gene_id"] 
-                  and factors_df.schema[col].is_numeric()]
-    
-    # Prepare results
-    results = []
-    
-    # Calculate covariance matrix for Mahalanobis distance
-    try:
-        all_factors = factors_df.select(confounders).to_numpy()
-        cov_matrix = np.cov(all_factors, rowvar=False)
-        # Add regularization to ensure invertibility
-        cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
-        
-        try:
-            inv_cov = np.linalg.inv(cov_matrix)
-        except np.linalg.LinAlgError:
-            inv_cov = np.linalg.pinv(cov_matrix)
-    except Exception as e:
-        print(f"Error calculating covariance matrix: {e}")
-        # Return empty DataFrame with expected schema if covariance calculation fails
-        schema = {
-            "gene_id": pl.Utf8,
-            "target_gene_id": pl.Utf8,
-            "mahalanobis_distance": pl.Float64,
-            "euclidean_distance": pl.Float64
-        }
-        return pl.DataFrame(schema=schema)
-    
-    # Process each match
-    for match in matched_df.rows(named=True):
-        match_id = match["gene_id"]
-        target_id = match["target_gene_id"]
-        
-        # Get factor values for the match and target
-        match_factors = factors_df.filter(pl.col("gene_id") == match_id)
-        target_factors = factors_df.filter(pl.col("gene_id") == target_id)
-        
-        # Skip if either gene is missing from factors
-        if match_factors.height == 0 or target_factors.height == 0:
-            continue
-            
-        try:
-            match_vector = match_factors.select(confounders).row(0)
-            target_vector = target_factors.select(confounders).row(0)
-            
-            # Calculate distances
-            maha_dist = mahalanobis(match_vector, target_vector, inv_cov)
-            eucl_dist = euclidean(match_vector, target_vector)
-            
-            results.append({
-                "gene_id": match_id,
-                "target_gene_id": target_id,
-                "mahalanobis_distance": float(maha_dist),
-                "euclidean_distance": float(eucl_dist)
-            })
-        except Exception as e:
-            print(f"Error calculating distance for {match_id}-{target_id}: {e}")
-            continue
-    
-    # Create DataFrame from results
-    if not results:
-        schema = {
-            "gene_id": pl.Utf8,
-            "target_gene_id": pl.Utf8,
-            "mahalanobis_distance": pl.Float64,
-            "euclidean_distance": pl.Float64
-        }
-        return pl.DataFrame(schema=schema)
-        
-    return pl.DataFrame(results)
 
 
 def plot_distance_distributions(traditional_matches, mahalanobis_matches, output_path):

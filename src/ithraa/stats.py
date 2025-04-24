@@ -11,7 +11,7 @@ import polars as pl
 from scipy import stats
 import statsmodels.api as sm
 from statsmodels.stats.multitest import multipletests
-from scipy.spatial.distance import mahalanobis
+from scipy.spatial.distance import mahalanobis, euclidean
 
 
 #  Core numba-optimised functions for inner loops and heavy calculations
@@ -831,3 +831,143 @@ def match_genes_mahalanobis(
         return pl.DataFrame(schema=schema)
     
     return pl.DataFrame(all_matched_data)
+
+def calculate_distances(gene_set_df, matched_df, factors_df, use_pca=True, pca_components=None):
+    """
+    Calculate Euclidean and Mahalanobis distances between target genes and their matches.
+    
+    Args:
+        gene_set_df: DataFrame containing target genes
+        matched_df: DataFrame containing matched genes with target_gene_id column
+        factors_df: DataFrame containing confounding factors for all genes
+        use_pca: Whether to use PCA for dimensionality reduction before calculating Mahalanobis distance
+        pca_components: Number of PCA components to use (default: None, which uses min(n_samples, n_features))
+        
+    Returns:
+        DataFrame with distances for each match
+    """
+    from sklearn.decomposition import PCA
+    
+    # Early return if matched_df is empty
+    if matched_df.height == 0:
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8,
+            "mahalanobis_distance": pl.Float64,
+            "euclidean_distance": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
+    
+    # Validate input
+    if "target_gene_id" not in matched_df.columns:
+        raise ValueError("matched_df must have a target_gene_id column")
+    
+    # Get confounders (all numeric columns except gene_id and target_gene_id)
+    confounders = [col for col in factors_df.columns 
+                  if col not in ["gene_id", "target_gene_id"] 
+                  and factors_df.schema[col].is_numeric()]
+    
+    # Prepare results
+    results = []
+    
+    try:
+        # Get all factor values as numpy array
+        all_factors_df = factors_df.select(confounders)
+        all_factors = all_factors_df.to_numpy()
+        
+        # Apply PCA if requested
+        if use_pca:
+            # Determine number of components if not specified
+            if pca_components is None:
+                n_samples, n_features = all_factors.shape
+                pca_components = min(n_samples, n_features)
+            
+            # Apply PCA to reduce dimensions and decorrelate factors
+            pca = PCA(n_components=pca_components)
+            all_factors_pca = pca.fit_transform(all_factors)
+            
+            # Create a mapping from gene_id to PCA-transformed factors
+            gene_to_pca_factors = {}
+            for i, gene_id in enumerate(factors_df["gene_id"].to_list()):
+                gene_to_pca_factors[gene_id] = all_factors_pca[i]
+            
+            # For PCA-transformed data, covariance is diagonal
+            # We can use identity matrix for Mahalanobis calculation
+            inv_cov = np.eye(pca_components)
+        else:
+            # Traditional approach - calculate covariance directly
+            cov_matrix = np.cov(all_factors, rowvar=False)
+            # Add regularization to ensure invertibility
+            cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-6
+            
+            try:
+                inv_cov = np.linalg.inv(cov_matrix)
+            except np.linalg.LinAlgError:
+                inv_cov = np.linalg.pinv(cov_matrix)
+    except Exception as e:
+        print(f"Error in preprocessing for distance calculation: {e}")
+        # Return empty DataFrame with expected schema if preprocessing fails
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8,
+            "mahalanobis_distance": pl.Float64,
+            "euclidean_distance": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
+    
+    # Process each match
+    for match in matched_df.rows(named=True):
+        match_id = match["gene_id"]
+        target_id = match["target_gene_id"]
+        
+        # Get factor values for the match and target
+        match_factors = factors_df.filter(pl.col("gene_id") == match_id)
+        target_factors = factors_df.filter(pl.col("gene_id") == target_id)
+        
+        # Skip if either gene is missing from factors
+        if match_factors.height == 0 or target_factors.height == 0:
+            continue
+            
+        try:
+            if use_pca:
+                # Use the PCA-transformed vectors
+                match_vector = gene_to_pca_factors.get(match_id)
+                target_vector = gene_to_pca_factors.get(target_id)
+                
+                if match_vector is None or target_vector is None:
+                    # Skip if vectors not found in the PCA transform
+                    continue
+            else:
+                # Use the original vectors
+                match_vector = match_factors.select(confounders).row(0)
+                target_vector = target_factors.select(confounders).row(0)
+            
+            # Calculate distances
+            maha_dist = mahalanobis(match_vector, target_vector, inv_cov)
+            
+            # For Euclidean distance, always use the original vectors
+            orig_match_vector = match_factors.select(confounders).row(0)
+            orig_target_vector = target_factors.select(confounders).row(0)
+            eucl_dist = euclidean(orig_match_vector, orig_target_vector)
+            
+            results.append({
+                "gene_id": match_id,
+                "target_gene_id": target_id,
+                "mahalanobis_distance": float(maha_dist),
+                "euclidean_distance": float(eucl_dist)
+            })
+        except Exception as e:
+            print(f"Error calculating distance for {match_id}-{target_id}: {e}")
+            continue
+    
+    # Create DataFrame from results
+    if not results:
+        schema = {
+            "gene_id": pl.Utf8,
+            "target_gene_id": pl.Utf8,
+            "mahalanobis_distance": pl.Float64,
+            "euclidean_distance": pl.Float64
+        }
+        return pl.DataFrame(schema=schema)
+        
+    return pl.DataFrame(results)
